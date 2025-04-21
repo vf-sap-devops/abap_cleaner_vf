@@ -1,0 +1,1984 @@
+package com.sap.adt.abapcleaner.parser;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+import com.sap.adt.abapcleaner.base.ABAP;
+import com.sap.adt.abapcleaner.base.Language;
+import com.sap.adt.abapcleaner.base.StringUtil;
+import com.sap.adt.abapcleaner.base.ABAP.SyField;
+import com.sap.adt.abapcleaner.programbase.IntegrityBrokenException;
+import com.sap.adt.abapcleaner.programbase.ParseException;
+import com.sap.adt.abapcleaner.programbase.UnexpectedSyntaxAfterChanges;
+import com.sap.adt.abapcleaner.programbase.UnexpectedSyntaxException;
+
+public class CommandTest {
+	private static final String SEP = ABAP.LINE_SEPARATOR;
+	private Command[] commands;
+
+	private void assertStringArrayEquals(String[] exp, String[] act) {
+		assertEquals(exp.length, act.length);
+		for (int i = 0; i < exp.length; ++i)
+			assertEquals(exp[i], act[i]);
+	}
+
+	private Command buildCommand(String codeText) {
+		try {
+			Code code = Code.parse(null, ParseParams.createForTest(codeText, ABAP.NEWEST_RELEASE));
+			
+			commands = new Command[code.commandCount];
+			commands[0] = code.firstCommand;
+			for (int i = 1; i < code.commandCount; ++i)
+				commands[i] = commands[i - 1].getNext();
+			
+			return code.firstCommand;
+		} catch (ParseException e) {
+			fail();
+			return null;
+		}
+	}
+
+	private void buildCommandExpectingParseExc(String codeText) {
+		try {
+			Code.parse(null, ParseParams.createForTest(codeText, ABAP.NEWEST_RELEASE));
+			fail();
+		} catch (ParseException e) {
+		}
+	}
+
+	private Command buildSqlScriptCommand(String sqlScriptCode) {
+		String codeText = "METHOD any_method BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT." 
+								+ SEP + sqlScriptCode + SEP + "ENDMETHOD.";
+		try {
+			Code code = Code.parse(null, ParseParams.createForTest(codeText, ABAP.NEWEST_RELEASE));
+			return code.firstCommand.getNext();
+		} catch (ParseException e) {
+			fail();
+			return null;
+		}
+	}
+
+	private Section buildSection(String codeText) {
+		try {
+			Code code = Code.parse(null, ParseParams.createForTest(codeText, ABAP.NEWEST_RELEASE));
+			return Section.create(code.firstCommand, code.lastCommand);
+		} catch (ParseException | UnexpectedSyntaxException e) {
+			fail();
+			return null;
+		}
+	}
+
+	@Test
+	void testIsAssignment() {
+		assertFalse(buildCommand("CLEAR ev_param.").isAssignment(false, false));
+		assertFalse(buildCommand(".").isAssignment(false, false));
+		assertFalse(buildCommand("any_method( iv_param = 1 ).").isAssignment(false, false));
+		assertFalse(buildCommand("DATA(a) = 1.").isAssignment(false, false));
+		assertFalse(buildCommand("DATA(a) = get_value( ).").isAssignment(false, false));
+	
+		assertTrue(buildCommand("a = 1.").isAssignment(false, false));
+		assertTrue(buildCommand("a += 1.").isAssignment(false, false));
+		assertTrue(buildCommand("ls_struc-comp = 1.").isAssignment(false, false));
+		assertTrue(buildCommand("ls_struc-comp *= 2.").isAssignment(false, false));
+		assertTrue(buildCommand("<ls_any>-comp = 1.").isAssignment(false, false));
+		assertTrue(buildCommand("<ls_any>-comp -= 1.").isAssignment(false, false));
+		assertTrue(buildCommand("DATA(a) = 1.").isAssignment(true, false));
+		assertTrue(buildCommand("DATA(a) = get_value( ).").isAssignment(true, false));
+	}
+
+	@Test
+	void testIsAssignmentToTableExpr() {
+		assertFalse(buildCommand("CLEAR ev_param.").isAssignment(false, true));
+		assertFalse(buildCommand(".").isAssignment(false, true));
+		assertFalse(buildCommand("any_method( iv_param = 1 ).").isAssignment(false, true));
+		assertFalse(buildCommand("DATA(a) = 1.").isAssignment(false, true));
+		assertFalse(buildCommand("DATA(a) = get_value( ).").isAssignment(false, true));
+	
+		assertTrue(buildCommand("lt_any[ 1 ] = ls_any.").isAssignment(false, true));
+		assertTrue(buildCommand("lt_any[ comp = 1 ]-name = 'a'.").isAssignment(false, true));
+		assertTrue(buildCommand("lt_any[ 1 ]-inner[ 2 ]-inner_inner[ 3 ]-comp = 1.").isAssignment(false, true));
+	}
+
+	@Test
+	void testIsEmpty() {
+		Command emptyCommand = buildCommand("  \" comment");
+		emptyCommand.firstToken.text = "";
+		assertTrue(emptyCommand.isEmpty());
+	}
+
+	@Test
+	void testIsMethodFunctionOrFormStart() {
+		assertTrue(buildCommand("METHOD any. ENDMETHOD.").isMethodFunctionOrFormStart());
+		assertTrue(buildCommand("FUNCTION any. ENDFUNCTION.").isMethodFunctionOrFormStart());
+		assertTrue(buildCommand("FORM any. ENDFORM.").isMethodFunctionOrFormStart());
+	}
+
+	@Test
+	void testIsLateChain() {
+		assertFalse(buildCommand("a += 1.").isLateChain());
+		assertFalse(buildCommand("lv_text = `:`.").isLateChain());
+		assertFalse(buildCommand("  \" comment with : colon in it").isLateChain());
+		assertFalse(buildCommand("DATA: lv_any TYPE i.").isLateChain());
+		assertFalse(buildCommand("WRITE: / a, b.").isLateChain());
+		assertFalse(buildCommand("DATA: \" comment\r\n  lv_any TYPE i.").isLateChain());
+		
+		assertTrue(buildCommand("a += : 1, 2, 3.").isLateChain());
+		assertTrue(buildCommand("a += \" comment\r\n  : 1, 2, 3.").isLateChain());
+		assertTrue(buildCommand("CALL METHOD : any_method, other_method.").isLateChain());
+	}
+	
+	@Test
+	void testIsSqlScript() {
+		assertFalse(buildCommand("* comment").isSqlScript());
+		assertFalse(buildCommand("DATA lv_value TYPE i.").isSqlScript());
+
+		assertTrue(buildSqlScriptCommand("* comment").isSqlScript());
+		assertTrue(buildSqlScriptCommand("INSERT INTO dtab (field1, field2) VALUES ('value1', 'value2');").isSqlScript());
+	}
+	
+	@Test
+	void testAddNextWithWrongCloserForMethod() {
+		Command command = buildCommand("METHOD any.");
+		try {
+			command.addNext(buildCommand("ENDFUNCTION."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions ENDMETHOD as the expected level closer and ENDFUNCTION as the actual level closer
+			assertTrue(ex.getMessage().indexOf("ENDMETHOD") >= 0);
+			assertTrue(ex.getMessage().indexOf("ENDFUNCTION") >= 0);
+			// since this is NOT inside a macro definition with DEFINE, expect no mentioning of 'macro'
+			assertFalse(ex.getMessage().indexOf("macro") >= 0);
+			assertFalse(ex.getMessage().indexOf("Macro") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithWrongCloserForIf() {
+		Command command = buildCommand("IF a = 1.");
+		try {
+			command.addNext(buildCommand("ENDLOOP."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions ELSEIF, ELSE, and ENDIF as the expected level closer and ENDLOOP as the actual level closer
+			assertTrue(ex.getMessage().indexOf("ELSEIF") >= 0);
+			assertTrue(ex.getMessage().indexOf("ELSE") >= 0);
+			assertTrue(ex.getMessage().indexOf("ENDIF") >= 0);
+			assertTrue(ex.getMessage().indexOf("ENDLOOP") >= 0);
+			// since this is NOT inside a macro definition with DEFINE, expect no mentioning of 'macro'
+			assertFalse(ex.getMessage().indexOf("macro") >= 0);
+			assertFalse(ex.getMessage().indexOf("Macro") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithMissingOpener() {
+		Command command = buildCommand("DATA a TYPE i.");
+		try {
+			command.addNext(buildCommand("ENDLOOP."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions LOOP as the expected level opener for ENDLOOP 
+			assertTrue(ex.getMessage().indexOf("LOOP") >= 0);
+			assertTrue(ex.getMessage().indexOf("ENDLOOP") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithMissingOpeners() {
+		Command command = buildCommand("CLASS any_class DEFINITION DEFERRED.");
+		try {
+			command.addNext(buildCommand("PRIVATE SECTION."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions CLASS/PUBLIC/PROTECTED as the expected level opener for PRIVATE [SECTION]
+			assertTrue(ex.getMessage().indexOf("CLASS") >= 0);
+			assertTrue(ex.getMessage().indexOf("PUBLIC") >= 0);
+			assertTrue(ex.getMessage().indexOf("PROTECTED") >= 0);
+			assertTrue(ex.getMessage().indexOf("PRIVATE") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithUnclosedOpenerInMacroDef() {
+		buildCommand("METHOD any_method." + SEP + "DEFINE any_macro." + SEP + "IF lt_any IS NOT INITIAL." + SEP + "DO 5 TIMES.");
+		Command command = commands[3];
+		try {
+			command.addNext(buildCommand("END-OF-DEFINITION."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions that ENDDO was found instead of END-OF-DEFINITION,
+			// and that macro definitions with incomplete code blocks are not supported
+			assertTrue(ex.getMessage().indexOf("ENDDO") >= 0);
+			assertTrue(ex.getMessage().indexOf("END-OF-DEFINITION") >= 0);
+			assertTrue(ex.getMessage().indexOf("Macro") >= 0);
+			assertTrue(ex.getMessage().indexOf("incomplete code block") >= 0);
+			assertTrue(ex.getMessage().indexOf("not supported") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithUnopenedCloserInMacroDef2() {
+		buildCommand("METHOD any_method." + SEP + "DEFINE any_macro." + SEP + "DO 5 TIMES." + SEP + "ENDDO.");
+		Command command = commands[3];
+		try {
+			command.addNext(buildCommand("ENDIF."));
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions that ENDIF was found without corresponding IF,
+			// and that macro definitions with incomplete code blocks are not supported
+			assertTrue(ex.getMessage().indexOf("ENDIF") >= 0);
+			assertTrue(ex.getMessage().indexOf("IF") >= 0);
+			assertTrue(ex.getMessage().indexOf("Macro") >= 0);
+			assertTrue(ex.getMessage().indexOf("incomplete code block") >= 0);
+			assertTrue(ex.getMessage().indexOf("not supported") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextNull() {
+		Command command = buildCommand("a = 1.");
+		try {
+			command.addNext(null);
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testAddNextWhenNextExists() {
+		Command command = buildCommand("a = 1. b = 2.");
+		Command newCommand = buildCommand("c = 3.");
+		try {
+			command.addNext(newCommand);
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testAddNextWhenNewCommandHasPrev() {
+		Command command = buildCommand("c = 3.");
+		Command newCommand = buildCommand("a = 1. b = 2.").getNext();
+		
+		try {
+			command.addNext(newCommand);
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testAddNextWithMacroOpening() {
+		Command command = buildCommand("METHOD any_method." + SEP + "if_initial it_any_table." + SEP + "if_initial it_any_table." + SEP + "RETURN.").getNext().getNext().getNext();
+		Command newCommand = buildCommand("ENDIF.");
+		try {
+			command.addNext(newCommand);
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions CLASS/PUBLIC/PROTECTED as the expected level opener for PRIVATE [SECTION]
+			assertTrue(ex.getMessage().indexOf("incomplete code block") >= 0);
+			assertTrue(ex.getMessage().indexOf("if_initial") >= 0);
+			assertTrue(ex.getMessage().indexOf("consider hiding") >= 0);
+		}
+	}
+	
+	@Test
+	void testAddNextWithMacroOpeningAndOtherMacro() {
+		Command command = buildCommand("METHOD any_method." + SEP + "if_initial it_any_table." + SEP + "report_as_initial it_any_table." + SEP + "RETURN.").getNext().getNext().getNext();
+		Command newCommand = buildCommand("ENDIF.");
+		try {
+			command.addNext(newCommand);
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expect an error message that mentions CLASS/PUBLIC/PROTECTED as the expected level opener for PRIVATE [SECTION]
+			assertTrue(ex.getMessage().indexOf("incomplete code block") >= 0);
+			assertTrue(ex.getMessage().indexOf("if_initial") >= 0);
+			assertTrue(ex.getMessage().indexOf("report_as_initial") >= 0);
+			assertTrue(ex.getMessage().indexOf("consider hiding") >= 0);
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildNull() {
+		Command command = buildCommand("IF a = 1.");
+		
+		try {
+			command.insertFirstChild(null);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildWhenChildExists() {
+		Command command = buildCommand("IF a = 1. RETURN. ENDIF.");
+		Command newCommand = buildCommand("a = 2.");
+
+		try {
+			command.insertFirstChild(newCommand);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildThatHasPrevCommand() {
+		Command command = buildCommand("IF a = 1. RETURN. ENDIF.");
+		Command newCommand = buildCommand("a = 2. a = 3.").getNext();
+
+		try {
+			command.insertFirstChild(newCommand);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildThatClosesLevel() {
+		Command command = buildCommand("IF a = 1. RETURN. ENDIF.");
+		Command newCommand = buildCommand("ENDIF.");
+
+		try {
+			command.insertFirstChild(newCommand);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildWhenParentDoesNotOpenLevel() {
+		Command command = buildCommand("a = 1.");
+		Command newCommand = buildCommand("a = 2.");
+
+		try {
+			command.insertFirstChild(newCommand);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+		}
+	}
+	
+	@Test
+	void testInsertFirstChildThatHasChildren() {
+		Command command = buildCommand("IF a = 1.");
+		Command newCommand = buildCommand("IF a = 2. RETURN. ENDIF.");
+
+		try {
+			command.insertFirstChild(newCommand);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+		}
+	}
+
+	@Test
+	void testInsertRightSiblingNull() {
+		Command command = buildCommand("DATA a TYPE i.");
+		Command newCommand = null;
+		
+		try {
+			command.insertRightSibling(newCommand, false, false);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testInsertRightSiblingToLastCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i.");
+		Command newCommand = buildCommand("DATA b TYPE string."); 
+		command.insertRightSibling(newCommand, false, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingToInnerCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i. DATA c TYPE i.");
+		Command newCommand = buildCommand("DATA b TYPE string.");
+		command.insertRightSibling(newCommand, false, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingToLastChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. a += 1. ENDIF.").getNext();
+		Command newCommand = buildCommand("RETURN.");
+		command.insertRightSibling(newCommand, false, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingToInnerChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. a += 1. RETURN. ENDIF.").getNext();
+		Command newCommand = buildCommand("b += 1.");
+		command.insertRightSibling(newCommand, false, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingThatHasChildren() {
+		Command command = buildCommand("DATA a TYPE i.");
+		Command newCommand = buildCommand("IF a = 2. RETURN. ENDIF.");
+
+		try {
+			command.insertRightSibling(newCommand, false, false);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+		}
+	}
+	
+	@Test
+	void testInsertRightSiblingToCommandWithChildren() {
+		Command command = buildCommand("IF a = 2. RETURN. ENDIF.");
+		Command newCommand = buildCommand("a = 1.");
+
+		try {
+			command.insertRightSibling(newCommand, false, false);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+		}
+	}
+
+	@Test
+	void testInsertRightSiblingSectionNull() {
+		Command command = buildCommand("DATA a TYPE i.");
+		Section newSection = null;
+		
+		try {
+			command.insertRightSibling(newSection, false);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionOfOneCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i.");
+		Section newSection = buildSection("a = 1.");
+		command.insertRightSibling(newSection, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionToLastCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i.");
+		Section newSection = buildSection("IF a = 1. RETURN. ENDIF.");
+		command.insertRightSibling(newSection, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionToLastChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. a += 1. ENDIF.").getNext();
+		Section newSection = buildSection("IF b = 1. RETURN. ENDIF.");
+		command.insertRightSibling(newSection, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionToInnerChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. a += 1. a += 1. ENDIF.").getNext();
+		Section newSection = buildSection("IF b = 1. RETURN. ENDIF.");
+		command.insertRightSibling(newSection, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionToInnerCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i. a = 2.");
+		Section newSection = buildSection("IF a = 1. RETURN. ENDIF.");
+		command.insertRightSibling(newSection, false);
+	}
+	
+	@Test
+	void testInsertRightSiblingSectionToCommandWithChildren() {
+		Command command = buildCommand("IF a = 2. RETURN. ENDIF.");
+		Section newSection = buildSection("IF a = 1. RETURN. ENDIF.");
+
+		try {
+			command.insertRightSibling(newSection, false);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+		}
+	}
+	
+	@Test
+	void testAddTokenNull() {
+		Command command = buildCommand("DATA a TYPE i.");
+		try {
+			command.addToken(null);
+			fail();
+		} catch(NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testCanAddNull() {
+		Command command = buildCommand("DATA a TYPE i.");
+		try {
+			command.canAdd(null, null);
+			fail();
+		} catch(NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testCanAddToPragma() {
+		Token tokenInNewLine = Token.createForAbap(1, 4, "\" comment", TokenType.COMMENT, 1);
+		
+		assertFalse(buildCommand("##PRAGMA").canAdd(tokenInNewLine, null));
+		assertFalse(buildCommand("##PRAGMA ##ANOTHER").canAdd(tokenInNewLine, null));
+		assertFalse(buildCommand("##PRAGMA ##ANOTHER \" comment").canAdd(tokenInNewLine, null));
+	}
+	
+	@Test 
+	void testFinishBuildDefLocalFriends() {
+		assertFalse(buildCommand("CLASS cl_any DEFINITION DEFERRED.").getOpensLevel());
+		assertFalse(buildCommand("CLASS: cl_any DEFINITION DEFERRED.").getOpensLevel());
+		assertFalse(buildCommand("CLASS cl_any DEFINITION LOCAL FRIENDS cl_other.").getOpensLevel());
+		assertFalse(buildCommand("CLASS : cl_any DEFINITION LOCAL FRIENDS cl_other.").getOpensLevel());
+	}
+	
+	@Test 
+	void testFinishBuildChainOfLevelOpener() {
+		// if a Command opens a level, only a chain of one is accepted:
+		buildCommand("IF : a = 1.");
+		buildCommand("DO : 5 TIMES.");
+
+		// by contrast, a chain of multiple elements must throw a ParseException
+		buildCommandExpectingParseExc("IF : a = 1, b = 2.");
+		buildCommandExpectingParseExc("DO : 5 TIMES, 10 TIMES.");
+	}
+
+	@Test
+	void testInsertLeftSiblingNull() {
+		Command command = buildCommand("DATA a TYPE i.");
+		Command newCommand = null;
+		
+		try {
+			command.insertLeftSibling(newCommand);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test
+	void testInsertLeftSiblingToFirstCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA b TYPE string.");
+		Command newCommand = buildCommand("DATA a TYPE i.");
+		command.insertLeftSibling(newCommand);
+	}
+	
+	@Test
+	void testInsertLeftSiblingToInnerCommand() throws IntegrityBrokenException {
+		Command command = buildCommand("DATA a TYPE i. DATA c TYPE i. DATA d TYPE i.").getNext();
+		Command newCommand = buildCommand("DATA b TYPE string.");
+		command.insertLeftSibling(newCommand);
+	}
+	
+	@Test
+	void testInsertLeftSiblingToFirstChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. RETURN. ENDIF.").getNext();
+		Command newCommand = buildCommand("a += 1.");
+		command.insertLeftSibling(newCommand);
+	}
+	
+	@Test
+	void testInsertLeftSiblingToInnerChild() throws IntegrityBrokenException {
+		Command command = buildCommand("IF a = 1. a += 1. c += 1. d += 1. ENDIF.").getNext().getNext();
+		Command newCommand = buildCommand("b += 1.");
+		command.insertLeftSibling(newCommand);
+	}
+	
+	@Test
+	void testInsertLeftSiblingThatHasChildren() {
+		Command command = buildCommand("b = 1.");
+		Command newCommand = buildCommand("IF a = 2. RETURN. ENDIF.");
+
+		try {
+			command.insertLeftSibling(newCommand);
+			fail();
+		} catch (IntegrityBrokenException ex) {
+		}
+	}
+
+	void assertIntegrityBroken(Command command) {
+		try {
+			command.testReferentialIntegrity(true);
+			fail();
+		} catch(IntegrityBrokenException ex) {
+			assertTrue(ex.getMessage().length() > 0);
+		}
+	}
+
+	void assertIntegrityBroken(Command command1, Command command2) {
+		assertIntegrityBroken(command1);
+		assertIntegrityBroken(command2);
+	}
+	
+	@Test
+	void testReferentialIntegrity() {
+		final String code =  "IF a = 2. RETURN. ENDIF.";
+		
+		buildCommand(code);
+		commands[0].setNext(null);
+		assertIntegrityBroken(commands[0], commands[1]);
+		
+		buildCommand(code);
+		commands[1].setPrev(null);
+		assertIntegrityBroken(commands[0]);
+		
+		buildCommand(code);
+		commands[0].setNextSibling(null);
+		assertIntegrityBroken(commands[0], commands[2]);
+		
+		buildCommand(code);
+		commands[0].setNextSibling(commands[1]);
+		assertIntegrityBroken(commands[0]);
+		
+		buildCommand(code);
+		commands[2].setPrevSibling(null);
+		assertIntegrityBroken(commands[0], commands[2]);
+		
+		buildCommand(code);
+		commands[2].setPrevSibling(commands[1]);
+		assertIntegrityBroken(commands[0]);
+		
+		buildCommand(code);
+		commands[0].setFirstChild(null);
+		assertIntegrityBroken(commands[0], commands[1]);
+		
+		buildCommand(code);
+		commands[0].setFirstChild(commands[2]);
+		assertIntegrityBroken(commands[0]);
+		
+		buildCommand(code);
+		commands[0].setLastChild(null);
+		assertIntegrityBroken(commands[0]);
+		
+		buildCommand(code);
+		commands[0].setLastChild(commands[2]);
+		assertIntegrityBroken(commands[0]);
+	}
+
+	@Test
+	void testReferentialIntegrityCodeIncomplete() {
+		final String code =  "IF a = 2. RETURN.";
+		
+		buildCommand(code);
+		commands[0].setNext(null);
+		assertIntegrityBroken(commands[0], commands[1]);
+	}
+
+	@Test
+	void testReferentialIntegrityOfTokens() {
+		final String code =  "IF a = 2. RETURN. ENDIF.";
+		Token newToken = Token.createForAbap(1, 1, "\" comment", TokenType.COMMENT, 1);
+		
+		buildCommand(code);
+		commands[0].getFirstToken().setPrev(newToken);
+		assertIntegrityBroken(commands[0]);
+
+		buildCommand(code);
+		commands[0].getLastToken().setNext(newToken);
+		assertIntegrityBroken(commands[0]);
+
+		buildCommand("\" comment");
+		try {
+			commands[0].getFirstToken().addNext(newToken);
+		} catch (UnexpectedSyntaxException e) {
+		}
+		assertIntegrityBroken(commands[0]);
+
+		buildCommand(code);
+		commands[0].getLastToken().setParentCommand(null);
+		assertIntegrityBroken(commands[0]);
+
+		buildCommand(code);
+		try {
+			commands[0].getLastToken().addNext(Token.createForAbap(0, 1, ABAP.COMMA_SIGN_STRING, TokenType.COMMA, 1));
+		} catch (UnexpectedSyntaxException e) {
+		};
+		assertIntegrityBroken(commands[0]);
+	}
+	
+	@Test
+	void testConstructorTokenNull() {
+		Code code = Code.createEmptyForTests();
+		try {
+			Command.create(code,  null, Language.ABAP);
+			fail();
+		} catch (NullPointerException ex) {
+		}
+	}
+	
+	@Test 
+	void testSectionToString() {
+		Command command = buildCommand("\r\nDATA a\r\nTYPE i.");
+		assertEquals("\r\nDATA a\r\nTYPE i.", Command.sectionToString(command.firstToken, command.lastToken, false));
+		assertEquals("DATA a TYPE i.", Command.sectionToString(command.firstToken, command.lastToken, true));
+	}
+
+	@Test
+	void testRemoveFromCodeWithChildren() {
+		Command command = buildCommand("IF a = 2. RETURN. ENDIF.");
+		try {
+			command.removeFromCode();
+			fail();
+		} catch(UnexpectedSyntaxException ex) {
+		} catch(IntegrityBrokenException ex) {
+			fail();
+		}
+	}
+
+	@Test
+	void testRemoveFromCodeFirstAndLast() throws UnexpectedSyntaxException, IntegrityBrokenException {
+		buildCommand("a = 1. b = 2. c = 3.");
+		commands[0].removeFromCode();
+		assertEquals(commands[1].getParentCode().firstCommand, commands[1]);
+
+		buildCommand("a = 1. b = 2. c = 3.");
+		commands[2].removeFromCode();
+		assertEquals(commands[1].getParentCode().lastCommand, commands[1]);
+	}
+	
+	@Test
+	void testPutCommentAboveLineOfErr() {
+		Command command = buildCommand("DATA a TYPE i.");
+		Token newToken = Token.createForAbap(1, 1, "SKIP", TokenType.KEYWORD, 1);
+		
+		try {
+			command.putCommentAboveLineOf(command.firstToken, null);
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException  e) {
+			fail();
+		} catch (NullPointerException ex) {
+			// expected case
+		}
+
+		try {
+			command.putCommentAboveLineOf(null, "comment");
+			fail();
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException  e) {
+			fail();
+		} catch (NullPointerException ex) {
+			// expected case
+		}
+
+		try {
+			command.putCommentAboveLineOf(newToken, "comment");
+			fail();
+		} catch (UnexpectedSyntaxException  e) {
+			// expected case
+		} catch (IntegrityBrokenException ex) {
+			fail();
+		}
+	}
+	
+	@Test
+	void testPutCommentAboveLineOf() {
+		try {
+			buildCommand("DATA a TYPE i.");
+			commands[0].putCommentAboveLineOf(commands[0].firstToken.getNext(), "comment");
+			assertTrue(commands[0].getPrev() != null);
+			
+			buildCommand("DATA n TYPE string." + SEP + "DATA a TYPE i.").getNext();
+			commands[1].putCommentAboveLineOf(commands[1].firstToken.getNext(), "comment");
+			assertTrue(commands[1].getPrev() != commands[0]);
+
+			buildCommand("\" other comment" + SEP + "DATA a TYPE i.").getNext();
+			commands[1].putCommentAboveLineOf(commands[1].firstToken.getNext(), "comment");
+			assertTrue(commands[1].getPrev() != commands[0]);
+
+			buildCommand("\" comment" + SEP + "DATA a TYPE i.").getNext();
+			commands[1].putCommentAboveLineOf(commands[1].firstToken.getNext(), "comment");
+			assertTrue(commands[1].getPrev() == commands[0]);
+
+			// keep an existing comment if it already contains an older version of the comment to be added
+			buildCommand("\" old comment" + SEP + "DATA a TYPE i.").getNext();
+			assertNull(commands[1].putCommentAboveLineOf(commands[1].firstToken.getNext(), "new comment", "very old comment", "old comment"));
+
+			buildCommand("  METHOD any_method." + SEP + "* asterisk comment" + SEP + "  ENDMETHOD.");
+			assertEquals(4, commands[1].putCommentAboveLineOf(commands[1].firstToken, "comment").spacesLeft);
+
+			buildCommand("  METHOD any_method." + SEP + "    any_method( )." + SEP + "  ENDMETHOD.");
+			assertEquals(4, commands[2].putCommentAboveLineOf(commands[2].firstToken, "comment").spacesLeft);
+
+			buildCommand("DATA a TYPE i," + SEP + "     \" old comment" + SEP + "     b TYPE i.");
+			assertNull(commands[0].putCommentAboveLineOf(commands[0].findTokenOfType(TokenType.IDENTIFIER, "b"), "new comment", "very old comment", "old comment"));
+
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException  e) {
+			fail();
+		}
+	}
+	
+	@Test
+	void testRemoveMatchingCommentAboveLineOfErr() {
+		String code = "DATA a TYPE i.";
+		
+		// call with token == null
+		try {
+			Command command = buildCommand(code);
+			command.removeMatchingCommentAboveLineOf(null, "comment A");
+			fail();
+		} catch (NullPointerException ex) {
+			// expected case
+		} catch (UnexpectedSyntaxException | UnexpectedSyntaxAfterChanges ex) {
+			fail();
+		}
+
+		// call with a token that belongs to another Command
+		try {
+			Token tokenInOtherCommand = Token.createForAbap(1, 1, "SKIP", TokenType.KEYWORD, 1);
+			Command command = buildCommand(code);
+			command.removeMatchingCommentAboveLineOf(tokenInOtherCommand, "comment A");
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expected case
+		} catch (UnexpectedSyntaxAfterChanges e) {
+			fail();
+		}
+	}
+	
+	@Test
+	void testRemoveMatchingCommentAboveLineOf() {
+		String code = "  DATA n TYPE string." + SEP + SEP + "  \" comment C" + SEP + "  DATA a TYPE i.";
+		try {
+			// call without any commentTextsToMatch parameters
+			buildCommand(code);
+			assertFalse(commands[2].removeMatchingCommentAboveLineOf(commands[2].firstToken.getNext()));
+
+			// call with no previous line
+			buildCommand("DATA a TYPE i.");
+			assertFalse(commands[0].removeMatchingCommentAboveLineOf(commands[0].firstToken.getNext(), "\" comment A"));
+
+			// call with the previous line NOT being a comment line
+			buildCommand("DATA a TYPE i." + SEP + "DATA b TYPE i.");
+			assertFalse(commands[1].removeMatchingCommentAboveLineOf(commands[1].firstToken.getNext(), "\" comment A"));
+			
+			// call with no comment matching the comment in the previous line 
+			buildCommand(code);
+			assertFalse(commands[2].removeMatchingCommentAboveLineOf(commands[2].firstToken.getNext(), "\" comment A", "\" comment B"));
+			
+			// call with the second comment matching the comment in the previous line 
+			buildCommand(code);
+			assertTrue(commands[2].removeMatchingCommentAboveLineOf(commands[2].firstToken.getNext(), "\" comment A", "\" comment C"));
+			// expect the empty lines to be transferred from the deleted comment to the declaration of variable "a"
+			assertEquals(2, commands[2].firstToken.lineBreaks);
+
+		} catch (UnexpectedSyntaxAfterChanges | UnexpectedSyntaxException e) {
+			fail();
+		}
+	}
+
+	@Test
+	void testAppendCommentToLineOfErr() {
+		String code = "DATA: a TYPE i," + SEP + "  b TYPE i.";
+		String comment = "\" comment";
+		
+		// call with token == null
+		try {
+			Command command = buildCommand(code);
+			command.appendCommentToLineOf(null, comment);
+			fail();
+		} catch (NullPointerException e) {
+			// expected case
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+			fail();
+		}
+		
+		// call with commentText == null
+		try {
+			Command command = buildCommand(code);
+			command.appendCommentToLineOf(command.getFirstToken(), null);
+			fail();
+		} catch (NullPointerException e) {
+			// expected case
+		} catch (IntegrityBrokenException | UnexpectedSyntaxException e) {
+			fail();
+		}
+
+		// call with a token that belongs to another Command
+		try {
+			Token tokenInOtherCommand = Token.createForAbap(1, 1, "SKIP", TokenType.KEYWORD, 1);
+			Command command = buildCommand(code);
+			command.appendCommentToLineOf(tokenInOtherCommand, comment);
+			fail();
+		} catch (NullPointerException | IntegrityBrokenException e) {
+			fail();
+		} catch (UnexpectedSyntaxException e) {
+			// expected case
+		}
+	}
+
+	@Test
+	void testAppendCommentToLineOf() throws NullPointerException, IntegrityBrokenException, UnexpectedSyntaxException {
+		String code = "DATA: a TYPE i, \" old comment" + SEP + "  b TYPE i.";
+		String comment = "new comment";
+		
+		// add a comment at the end of the Command
+		Command command = buildCommand("DATA a TYPE i.");
+		Token commentToken = command.appendCommentToLineOf(command.firstToken, comment);
+		assertTrue(commentToken != null);
+		assertTrue(commentToken.getNext() == null);
+
+		// add a comment at the end of the line
+		command = buildCommand("DATA: a TYPE i," + SEP + "  b TYPE i.");
+		commentToken = command.appendCommentToLineOf(command.firstToken, comment);
+		assertTrue(commentToken != null);
+		assertEquals("b", commentToken.getNext().text);
+
+		// add a comment to an existing comment
+		command = buildCommand(code);
+		commentToken = command.appendCommentToLineOf(command.firstToken, comment);
+		assertTrue(commentToken != null);
+		assertEquals("\" old comment \" new comment", commentToken.text);
+
+		// keep an existing comment if it already contains the comment to be added
+		command = buildCommand(code);
+		commentToken = command.appendCommentToLineOf(command.firstToken, "old comment");
+		assertTrue(commentToken != null);
+		assertEquals("\" old comment", commentToken.text);
+
+		// keep an existing comment if it already contains an older version of the comment to be added
+		command = buildCommand(code);
+		assertNull(command.appendCommentToLineOf(command.firstToken, "new comment", "very old comment", "old comment"));
+	}
+	
+	@Test
+	void testRemoveMatchingCommentFromLineOf() {
+		String code = "DATA a TYPE i.";
+		
+		// call with token == null
+		try {
+			Command command = buildCommand(code);
+			command.removeMatchingCommentFromLineOf(null, "comment A");
+			fail();
+		} catch (NullPointerException ex) {
+			// expected case
+		} catch (UnexpectedSyntaxException | UnexpectedSyntaxAfterChanges ex) {
+			fail();
+		}
+
+		// call with a token that belongs to another Command
+		try {
+			Token tokenInOtherCommand = Token.createForAbap(1, 1, "SKIP", TokenType.KEYWORD, 1);
+			Command command = buildCommand(code);
+			command.removeMatchingCommentFromLineOf(tokenInOtherCommand, "comment A");
+			fail();
+		} catch (UnexpectedSyntaxException ex) {
+			// expected case
+		} catch (UnexpectedSyntaxAfterChanges e) {
+			fail();
+		}
+	}
+	
+	@Test
+	void testGetNextNonCommentCommand() {
+		buildCommand("* comment" + SEP + "  \" comment" + SEP + "  DATA a TYPE i.");
+
+		assertEquals(commands[2], commands[0].getNextNonCommentCommand());
+		assertEquals(commands[2], commands[1].getNextNonCommentCommand());
+		assertEquals(null, commands[2].getNextNonCommentCommand());
+	}
+	
+	@Test
+	void testGetPrevNonCommentCommand() {
+		buildCommand("  DATA a TYPE i." + SEP + "* comment" + SEP + "  \" comment");
+
+		assertEquals(null, commands[0].getPrevNonCommentCommand());
+		assertEquals(commands[0], commands[1].getPrevNonCommentCommand());
+		assertEquals(commands[0], commands[2].getPrevNonCommentCommand());
+	}
+
+	@Test
+	void testGetNextNonCommentSibling() {
+		String code =      "* comment" 
+				+ SEP + "IF a = 1." 
+				+ SEP + "  \" comment" 
+				+ SEP + "  a += 1." 
+				+ SEP + "ENDIF." 
+				+ SEP + "\" comment";
+
+		buildCommand(code);
+
+		assertEquals(commands[1], commands[0].getNextNonCommentSibling());
+		assertEquals(commands[4], commands[1].getNextNonCommentSibling());
+		assertEquals(commands[3], commands[2].getNextNonCommentSibling());
+		assertEquals(null, commands[3].getNextNonCommentSibling());
+		assertEquals(null, commands[4].getNextNonCommentSibling());
+		assertEquals(null, commands[5].getNextNonCommentSibling());
+	}
+	
+	@Test
+	void testGetPrevNonCommentSibling() {
+		String code =      "* comment" 
+				+ SEP + "IF a = 1." 
+				+ SEP + "  a += 1." 
+				+ SEP + "  \" comment" 
+				+ SEP + "ENDIF." 
+				+ SEP + "\" comment";
+
+		buildCommand(code);
+
+		assertEquals(null, commands[0].getPrevNonCommentSibling());
+		assertEquals(null, commands[1].getPrevNonCommentSibling());
+		assertEquals(null, commands[2].getPrevNonCommentSibling());
+		assertEquals(commands[2], commands[3].getPrevNonCommentSibling());
+		assertEquals(commands[1], commands[4].getPrevNonCommentSibling());
+		assertEquals(commands[4], commands[5].getPrevNonCommentSibling());
+	}
+	
+	@Test
+	void testContainsLineBreaksBetween() {
+		Command command = buildCommand("DATA: a TYPE i, \" comment" + SEP + "  b TYPE string.");
+		
+		try {
+			command.containsLineBreaksBetween(null, command.lastToken, false);
+			fail();
+		} catch (NullPointerException ex) {
+			// expected case
+		}
+
+		assertTrue(command.containsLineBreaksBetween(command.firstToken, null, false));
+		assertFalse(command.containsLineBreaksBetween(command.firstToken, null, true));
+	}
+	
+	@Test 
+	void testIsAbapSqlOperation() {
+		assertTrue(buildCommand("SELECT * FROM dtab INTO TABLE result.").isAbapSqlOperation());
+		assertTrue(buildCommand("OPEN CURSOR WITH HOLD @DATA(dbcur) FOR SELECT * FROM dtab.").isAbapSqlOperation());
+		assertTrue(buildCommand("FETCH NEXT CURSOR @dbcur INTO @wa.").isAbapSqlOperation());
+		assertTrue(buildCommand("CLOSE CURSOR @dbcur.").isAbapSqlOperation());
+
+		assertTrue(buildCommand("INSERT INTO dtab VALUES wa.").isAbapSqlOperation());
+		assertTrue(buildCommand("INSERT dtab FROM @( VALUE #( id = 'X' num1 = 1 ) ).").isAbapSqlOperation());
+		assertTrue(buildCommand("INSERT dtab FROM TABLE itab. ").isAbapSqlOperation());
+		assertTrue(buildCommand("INSERT dtab FROM ( SELECT * FROM dtab2 ). ").isAbapSqlOperation());
+		assertTrue(buildCommand("INSERT dtab FROM @wa MAPPING FROM ENTITY.").isAbapSqlOperation());
+
+		assertFalse(buildCommand("INSERT dref INTO TABLE ref_tab.").isAbapSqlOperation());
+		assertFalse(buildCommand("INSERT sy-index INTO int_tab INDEX 1 REFERENCE INTO DATA(dref).").isAbapSqlOperation());
+		
+		assertTrue(buildCommand("DELETE FROM demo_update WHERE id = 'X'.").isAbapSqlOperation());
+		// TODO: not yet identified:
+		// assertTrue(buildCommand("DELETE dtab FROM @( VALUE #( id = 'X' ) )").isAbapSqlOperation());
+		// assertTrue(buildCommand("DELETE dtab FROM TABLE @del_tab MAPPING FROM ENTITY.").isAbapSqlOperation());
+		
+		assertFalse(buildCommand("DELETE FROM SHARED BUFFER demo_indx_blob(XY) ID id.").isAbapSqlOperation());
+		assertFalse(buildCommand("DELETE FROM MEMORY ID id.").isAbapSqlOperation());
+		assertFalse(buildCommand("DELETE TABLE mesh-node1\\_node2[ mesh-node1[ 1 ] ].").isAbapSqlOperation());
+		assertFalse(buildCommand("DELETE TABLE mesh-node1\\_node2[ mesh-node1[ 3 ] ] FROM VALUE line2( col3 = 33  ) USING KEY mkey. ").isAbapSqlOperation());
+		assertFalse(buildCommand("DELETE itab WHERE table_line IS INITIAL.").isAbapSqlOperation());
+		assertFalse(buildCommand("DELETE itab USING KEY skey FROM 4.").isAbapSqlOperation());
+
+		assertFalse(buildCommand("MODIFY TABLE itab FROM VALUE #( BASE wa carrname = 'abc' ).").isAbapSqlOperation());
+		assertFalse(buildCommand("MODIFY itab FROM VALUE line( col2 = 0 ) TRANSPORTING col2 WHERE col2 < 0.").isAbapSqlOperation());
+		assertFalse(buildCommand("MODIFY itab FROM VALUE line( col1 = '_' ) USING KEY mkey TRANSPORTING col1 WHERE col2 = 0.").isAbapSqlOperation());
+		assertFalse(buildCommand("MODIFY itab INDEX 1 USING KEY skey FROM VALUE #( col1 = 'X' ) TRANSPORTING col1. ").isAbapSqlOperation());
+	}
+	
+	@Test 
+	void testIsInClassImplementation() {
+		buildCommand("CLASS any_class IMPLEMENTATION. METHOD any_method. DATA a TYPE i. ENDMETHOD. ENDCLASS.");
+
+		assertTrue(commands[0].isInClassImplementation());
+		assertTrue(commands[1].isInClassImplementation());
+		assertTrue(commands[2].isInClassImplementation());
+		assertTrue(commands[3].isInClassImplementation());
+		assertTrue(commands[4].isInClassImplementation());
+
+		buildCommand("CLASS any_class DEFINITION FINAL. PUBLIC SECTION. DATA a TYPE i. ENDCLASS.");
+
+		assertFalse(commands[0].isInClassImplementation());
+		assertFalse(commands[1].isInClassImplementation());
+		assertFalse(commands[2].isInClassImplementation());
+		assertFalse(commands[3].isInClassImplementation());
+	}	
+	
+	@Test
+	void testGetAllKeywordsWithCollocations() {
+		Command command = buildCommand("LOOP AT itab FROM idx1 TRANSPORTING NO FIELDS WHERE table_line > 60. ENDLOOP.");
+		assertStringArrayEquals(new String[] { "LOOP AT", "FROM", "TRANSPORTING NO FIELDS", "WHERE" }, command.getAllKeywordsWithCollocations());
+	}
+	
+	@Test
+	void testIsFunctionalCallOrCallChain() {
+		assertTrue(buildCommand("any_method( iv_param = 1" + SEP + "  iv_name = `abc` ).").isFunctionalCallOrCallChain());
+		assertTrue(buildCommand("any_method( ) \" comment" + SEP + "        .").isFunctionalCallOrCallChain());
+		assertTrue(buildCommand("any_factory=>get( )->get_utility( )->any_method( iv_param = 1 ).").isFunctionalCallOrCallChain());
+		
+		assertFalse(buildCommand("a = get_value( ).").isFunctionalCallOrCallChain());
+		assertFalse(buildCommand("DATA(a) = get_value( ).").isFunctionalCallOrCallChain());
+		assertFalse(buildCommand("CALL METHOD any_method EXPORTING a = 1.").isFunctionalCallOrCallChain());
+		assertFalse(buildCommand("* comment").isFunctionalCallOrCallChain());
+	}
+	
+	@Test
+	void testGetDefinedName() {
+		assertEquals("any_class", buildCommand("CLASS any_class DEFINITION FINAL.").getDefinedName());
+		assertEquals("any_interface", buildCommand("INTERFACE any_interface PUBLIC.").getDefinedName());
+		assertEquals("any_method", buildCommand("METHODS any_method FOR TESTING.").getDefinedName());
+		assertEquals("any_method", buildCommand("METHODS: any_method FOR TESTING.").getDefinedName());
+		assertEquals("any_method", buildCommand("METHODS: \" comment" + SEP + "    any_method FOR TESTING.").getDefinedName());
+
+		assertEquals(null, buildCommand(".").getDefinedName());
+		assertEquals(null, buildCommand("SKIP.").getDefinedName());
+		assertEquals(null, buildCommand("\" comment").getDefinedName());
+	}
+	
+	@Test
+	void testRemoveAllFurtherChainColons() throws UnexpectedSyntaxAfterChanges {
+		// nothing to remove
+		Command command = buildCommand("DATA a TYPE i.");
+		command.removeAllChainColons();
+		assertEquals("DATA a TYPE i.", command.toString());
+
+		// multiple chain colons
+		command = buildCommand("DATA a : : TYPE :: i.");
+		command.removeAllChainColons();
+		assertEquals("DATA a TYPE i.", command.toString());
+
+		// expect whitespace before last chain colon to be transferred to the period .
+		command = buildCommand("DATA a : TYPE : i \" comment" + SEP + "  : .");
+		command.removeAllChainColons();
+		assertEquals("DATA a TYPE i \" comment" + SEP + "  .", command.toString());
+
+		command = buildCommand("DATA a : TYPE : i \" comment" + SEP + "  : .");
+		command.removeAllChainColons();
+		assertEquals("DATA a TYPE i \" comment" + SEP + "  .", command.toString());
+	}
+	
+	@Test
+	void testCopyTokenRangeToNewCommand() {
+		Command command = buildCommand("CALL METHOD any_method EXPORTING iv_param = : 1.");
+		command.originalCommand = command;
+		Token endToken = command.lastToken.getPrev().getPrev();
+		
+		try {
+			Command newCommand = command.copyTokenRangeToNewCommand(command.firstToken, endToken, 1, 2);
+			assertEquals("\r\n  CALL METHOD any_method EXPORTING iv_param =", newCommand.toString());
+
+			newCommand = command.copyTokenRangeToNewCommand(command.firstToken.getNext().getNext(), endToken, 0, 4);
+			assertEquals("    any_method EXPORTING iv_param =", newCommand.toString());
+
+			newCommand = command.copyTokenRangeToNewCommand(null, endToken, 1, 2);
+			assertEquals(null, newCommand);
+
+		} catch (UnexpectedSyntaxException e) {
+			fail();
+		}
+	}
+	
+	@Test
+	void testGetLanguageOfNextCommand() {
+		assertEquals(Language.SQL, buildCommand("EXEC SQL.").getLanguageOfNextCommand());
+
+		assertEquals(Language.SQLSCRIPT, buildCommand("METHOD get_any_data BY DATABASE FUNCTION FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING dtab1 dtab2.").getLanguageOfNextCommand());
+		assertEquals(Language.SQL, buildCommand("METHOD get_any_data BY DATABASE FUNCTION FOR HDB LANGUAGE SQL.").getLanguageOfNextCommand());
+		assertEquals(Language.GRAPH, buildCommand("METHOD get_shortest_path BY DATABASE PROCEDURE FOR HDB LANGUAGE GRAPH OPTIONS READ-ONLY USING cl_any=>any_workspace.").getLanguageOfNextCommand());
+		assertEquals(Language.LLANG, buildCommand("METHOD any_method BY DATABASE PROCEDURE FOR HDB LANGUAGE LLANG OPTIONS READ-ONLY.").getLanguageOfNextCommand());
+		assertEquals(Language.SQL, buildCommand("METHOD graph_workspace BY DATABASE GRAPH WORKSPACE FOR HDB LANGUAGE SQL USING any_graph").getLanguageOfNextCommand());
+		
+		// expect OTHER for an unknown language (e.g. a future extension) or if LANGUAGE is missing (which would be a syntax error)
+		assertEquals(Language.OTHER, buildCommand("METHOD any_method BY DATABASE PROCEDURE FOR HDB LANGUAGE FUTURE_EXTENSION OPTIONS READ-ONLY.").getLanguageOfNextCommand());
+		assertEquals(Language.OTHER, buildCommand("METHOD any_method BY DATABASE PROCEDURE FOR HDB OPTIONS READ-ONLY.").getLanguageOfNextCommand());
+
+		// inside an EXEC SQL block, expect the language of the command following the comment to be SQL 
+		assertEquals(Language.SQL, buildCommand("EXEC SQL." + SEP + "* comment").getNext().getLanguageOfNextCommand());
+	}
+	
+	@Test
+	void testOpensSelectLoop() {
+		// since .opensSelectLoop() is private, we test .getOpensLevel() instead (see Command.finishBuild())
+		assertTrue(buildCommand("SELECT DISTINCT (fieldlist) FROM dtab GROUP BY (scol) ORDER BY (scol) INTO (@dref->*, @count).").getOpensLevel());
+		assertTrue(buildCommand("SELECT DISTINCT (fieldlist) FROM dtab WHERE fld1 = 'ABC' INTO @dref->*.").getOpensLevel());
+		
+		// ensure that despite the arithmetic expressions, any_field is always identified as a table field due to which ENDSELECT is required, 
+		// including inside CAST( ... )  
+		assertTrue(buildCommand("SELECT any_field + 1 AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT 1 + any_field AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT CAST( any_field AS D34N ) / CAST( other_field AS D34N ) AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT 2 * any_field + 7 * @lc_any AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT concat( any_field, upper( 'abc' ) ) AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT concat( char`abc`, any_field ) AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+	   assertTrue(buildCommand("SELECT instr( 'abc', 'a' )  AS any_ FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+	   assertTrue(buildCommand("SELECT div( num1, num2 ) AS div FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+	   assertTrue(buildCommand("SELECT division( num1, num2, 2 ) AS division FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+	   assertTrue(buildCommand("SELECT mod( num1, num2 ) AS mod FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+	   assertTrue(buildCommand("SELECT @lc_any + abs( num1 - num2 ) AS sum FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+
+		assertFalse(buildCommand("SELECT FROM dtab FIELDS fld1, MIN( price ) AS min_price, MAX( price ) AS max_price GROUP BY fld1 INTO TABLE @DATA(result).").getOpensLevel());
+		assertFalse(buildCommand("SELECT FROM dtab FIELDS COUNT( CASE WHEN num1 < 4 THEN 'X' WHEN num1 BETWEEN 4 AND 7 THEN 'Y' END ) AS cnt, COUNT(*) AS cntstar INTO TABLE @DATA(result).").getOpensLevel());
+		assertFalse(buildCommand("SELECT FROM dtab FIELDS COUNT(*) INTO (@DATA(avg)).").getOpensLevel());
+		assertFalse(buildCommand("SELECT ( SUM( amt1 ) + SUM( amt2 ) ) AS amt_sum FROM any_table INTO @DATA(lt_amount).").getOpensLevel());
+	}
+
+	@Test
+	void testOpensSelectLoopLiterals() {
+		// ensure that untyped and typed literals are correctly handled:
+	   // if literals and host variables are used, but NO aggregation function is called, ENDSELECT is required
+		assertTrue(buildCommand("SELECT @abap_true AS bool, 'literal' as lit FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+		assertTrue(buildCommand("SELECT concat( char`abc`, char`def` ) AS fld FROM any_table INTO @DATA(ls_any). ENDSELECT.").getOpensLevel());
+
+		// with at least one aggregation function, ENDSELECT is NOT required
+		assertFalse(buildCommand("SELECT 1 AS lit1, '3.14' AS lit2, COUNT( * ) AS count, `text` AS lit3 FROM any_table INTO @DATA(ls_any).").getOpensLevel());
+		assertFalse(buildCommand("SELECT int1`1` AS lit1, d16n`3.14` AS lit2, COUNT( * ) AS count, cuky`EUR` AS lit3, dats`20230419` AS lit4 FROM any_table INTO @DATA(ls_any).").getOpensLevel());
+
+		// ensure that this even works if UP TO ... ROWS in an unusual position 
+		assertFalse(buildCommand("SELECT MAX( any_field ) UP TO 1 ROWS FROM any_table INTO @DATA(ls_any).").getOpensLevel());
+	}
+	
+	@Test
+	void testInsertLeftSiblingSectionError() throws IntegrityBrokenException {
+		boolean throwsException = false;
+		Section nullSection = null; 
+		try {
+			buildCommand("CLEAR lv_any.").insertLeftSibling(nullSection);
+		} catch (NullPointerException e) {
+			throwsException = true;
+		}
+		assertTrue(throwsException);
+	}
+
+	@Test
+	void testInsertLeftSiblingSectionToLevelCloserError() throws UnexpectedSyntaxException {
+		boolean throwsException = false;
+		Command newCommand = buildCommand("b = 2.");
+		Section newSection = Section.create(newCommand, newCommand); 
+		
+		try {
+			buildCommand("IF a = 1. c = 3. ENDIF.");
+			commands[2].insertLeftSibling(newSection);
+		} catch (IntegrityBrokenException e) {
+			throwsException = true;
+			assertTrue(StringUtil.contains(e.getMessage(), "closes a block"));
+		}
+		assertTrue(throwsException);
+	}
+
+	@Test
+	void testInsertLeftSiblingSectionToFirstCommand() throws IntegrityBrokenException, UnexpectedSyntaxException {
+		Command command = buildCommand("DATA b TYPE string.");
+		Command newCommand = buildCommand("DATA a TYPE i.");
+		Section newSection = Section.create(newCommand, newCommand);
+		command.insertLeftSibling(newSection);
+	}
+	
+	@Test
+	void testIsPublicClassDefinitionStart() {
+		assertFalse(buildCommand("CLASS any_class DEFINITION CREATE PUBLIC.").isPublicClassDefinitionStart());
+		assertFalse(buildCommand("CLASS any_class DEFINITION FINAL CREATE PRIVATE.").isPublicClassDefinitionStart());
+		assertFalse(buildCommand("INTERFACE any_interface PUBLIC.").isPublicClassDefinitionStart());
+		assertTrue(buildCommand("CLASS any_class DEFINITION ##PRAGMA PUBLIC.").isPublicClassDefinitionStart());
+		assertTrue(buildCommand("CLASS any_class DEFINITION \"comment" + SEP + "PUBLIC \"comment" + SEP + ".").isPublicClassDefinitionStart());
+	}
+	
+	private void assertChangesSyField(ABAP.SyField syField, boolean expChanges, String code) {
+		assertEquals(expChanges, buildCommand(code).changesSyField(syField));
+	}
+	
+	private void assertChangesSyField(ABAP.SyField syField, boolean expChanges, Command command) {
+		assertEquals(expChanges, command.changesSyField(syField));
+	}
+	
+	private void assertChangesSubrc(boolean expChanges, String code) {
+		assertChangesSyField(SyField.SUBRC, expChanges, code);
+	}
+	
+	private void assertChangesSubrc(boolean expChanges, Command command) {
+		assertChangesSyField(SyField.SUBRC, expChanges, command);
+	}
+	
+	@Test
+	void testChangesSySubrc() {
+		// expect changes on SY-SUBRC for: 
+		assertChangesSubrc(true, "sy-subrc = lv_value.");
+		assertChangesSubrc(true, "MOVE 1 TO sy-subrc.");
+
+		// Object Creation
+		assertChangesSubrc(true, "CREATE OBJECT lo_any EXPORTING param = lv_value.");
+		assertChangesSubrc(true, "lo_instance = NEW cl_any_class( iv_param = lv_value ).");
+		
+		// Calling and Exiting Program Units
+		assertChangesSubrc(true, "SUBMIT any_program VIA JOB lv_job_name NUMBER lv_jobcount AND RETURN.");
+		assertChangesSubrc(true, "CALL FUNCTION 'ANY_FUNCTION' EXCEPTIONS any_exc = 1 OTHERS = 2.");
+		assertChangesSubrc(true, "CALL METHOD me->(lc_method_name).");
+		assertChangesSubrc(true, "SET HANDLER on_any_event FOR io_instance->get_event( ).");
+		assertChangesSubrc(true, "a = b + c * cos( get_value( param = d ) ).");
+		
+		// Program Flow Logic
+		assertChangesSubrc(true, "WAIT UP TO 5 SECONDS.");
+		assertChangesSubrc(true, "RAISE any_classic_exception.");
+		assertChangesSubrc(true, "RAISE RESUMABLE EXCEPTION NEW cx_any_exception( ).");
+		
+		// Assignments
+		assertChangesSubrc(true, "ASSIGN itab[ 1 ] TO FIELD-SYMBOL(<ls_any>).");
+		assertChangesSubrc(true, "ASSIGN lo_instance->mv_value TO <ls_any>.");
+
+		// Processing Internal Data
+		assertChangesSubrc(true, "CONCATENATE lv_year lv_month '01' INTO lv_date.");
+		assertChangesSubrc(true, "FIND ls_data IN TABLE mt_data.");
+		assertChangesSubrc(true, "OVERLAY text1 WITH text2 ONLY mask.");
+		assertChangesSubrc(true, "REPLACE ALL OCCURRENCES OF lv_any IN <lv_other> WITH lv_other.");
+		assertChangesSubrc(true, "SHIFT text UP TO 'abc'.");
+		assertChangesSubrc(true, "SPLIT lv_value AT space INTO TABLE lt_table.");
+		assertChangesSubrc(true, "GET BIT lv_bitpos OF lv_string INTO lv_value.");
+		assertChangesSubrc(true, "SET BIT lv_bitpos OF lv_string TO lv_value.");
+		assertChangesSubrc(true, "WRITE lv_timestamp TIME ZONE sy-zonlo TO lv_timestamp_str.");
+		
+		assertChangesSubrc(true, "CONVERT DATE lv_date TIME lv_time INTO TIME STAMP DATA(lv_timestamp) TIME ZONE lv_timezone.");
+		assertChangesSubrc(true, "CONVERT TIME STAMP lv_timestamp TIME ZONE sy-zonlo INTO DATE lv_date.");
+		
+		assertChangesSubrc(true, "DELETE lt_table from 10.");
+		assertChangesSubrc(true, "INSERT VALUE #( comp = 1 ) INTO TABLE lt_table.");
+		assertChangesSubrc(true, buildCommand("LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.").getNext());
+		assertChangesSubrc(true, "LOOP AT GROUP <fs> INTO member. ENDLOOP.");
+		assertChangesSubrc(true, "READ TABLE its_table WITH KEY comp = 1 TRANSPORTING NO FIELDS.");
+		
+		// Processing External Data
+		assertChangesSubrc(true, "DELETE FROM demo_update WHERE id = 'X'.");
+		assertChangesSubrc(true, "FETCH NEXT CURSOR @dbcur INTO @wa.");
+		assertChangesSubrc(true, "INSERT INTO dtab VALUES wa.");
+		assertChangesSubrc(true, "INSERT dtab FROM ( SELECT * FROM dtab2 ). ");
+		assertChangesSubrc(true, "SELECT * FROM dtab INTO TABLE result.");
+		assertChangesSubrc(true, "OPEN CURSOR WITH HOLD @DATA(dbcur) FOR SELECT * FROM dtab.");
+		
+		assertChangesSubrc(true, buildCommand("EXEC SQL." + System.lineSeparator() + "ENDEXEC.").getNext());
+		assertChangesSubrc(true, buildCommand("EXEC SQL." + System.lineSeparator() + "SQL." + System.lineSeparator() + "ENDEXEC.").getNext().getNext());
+		assertChangesSubrc(true, "IMPORT any_tab = other_tab FROM DATABASE any_db(ab) ID any_id TO wa.");
+		assertChangesSubrc(true, "IMPORT DIRECTORY INTO itab FROM DATABASE any_db(ab) ID 'AB'.");
+
+		assertChangesSubrc(true, "CLOSE DATASET dset.");
+		assertChangesSubrc(true, "DELETE DATASET dset.");
+		assertChangesSubrc(true, "GET DATASET file POSITION FINAL(pos).");
+		assertChangesSubrc(true, "OPEN DATASET dset FOR OUTPUT IN BINARY MODE.");
+		assertChangesSubrc(true, "READ DATASET dset INTO xstr ACTUAL LENGTH FINAL(bytes).");
+		assertChangesSubrc(true, "SET DATASET file POSITION END OF FILE.");
+		assertChangesSubrc(true, "TRUNCATE DATASET dset AT CURRENT POSITION.");
+		assertChangesSubrc(true, "TRANSFER text TO dset.");
+
+		assertChangesSubrc(true, "AUTHORITY-CHECK OBJECT 'ANY_OBJ' ID 'ANYID' FIELD iv_value.");
+		assertChangesSubrc(true, "COMMIT WORK.");
+		assertChangesSubrc(true, "ROLLBACK WORK.");
+		assertChangesSubrc(true, "SET UPDATE TASK LOCAL.");
+		
+		// ABAP for RAP Business Objects
+		assertChangesSubrc(true, "COMMIT ENTITIES RESPONSES FAILED _failed_resp REPORTED _reported_resp.");
+		
+		// Program Parameters
+		assertChangesSubrc(true, "GET PARAMETER ID 'PARAM_ID' FIELD DATA(lv_value).");
+		assertChangesSubrc(true, "SET COUNTRY cntry.");
+		assertChangesSubrc(true, "SET LANGUAGE lang.");
+		
+		// Program Editing
+		assertChangesSubrc(true, "SET RUN TIME ANALYZER ON.");
+		assertChangesSubrc(true, "GENERATE SUBROUTINE POOL itab NAME prog.");
+		assertChangesSubrc(true, "INSERT REPORT prog FROM itab.");
+		assertChangesSubrc(true, "INSERT TEXTPOOL prog FROM itab LANGUAGE lang.");
+		assertChangesSubrc(true, "READ REPORT prog INTO itab MAXIMUM WIDTH INTO wid.");
+		assertChangesSubrc(true, "READ TEXTPOOL prog INTO itab LANGUAGE lang.");
+		assertChangesSubrc(true, "SYNTAX-CHECK FOR itab MESSAGE mess LINE lin WORD wrd.");
+		
+		// ABAP Data and Communication Interfaces
+		assertChangesSubrc(true, "RECEIVE RESULTS FROM FUNCTION 'ANY_FUNCTION' IMPORTING et_table = lt_table.");
+		assertChangesSubrc(true, "WAIT FOR ASYNCHRONOUS TASKS UNTIL a > 10 UP TO 10 SECONDS.");
+		assertChangesSubrc(true, "WAIT FOR MESSAGING CHANNELS UNTIL a > 10.");
+		assertChangesSubrc(true, "WAIT FOR PUSH CHANNELS UNTIL a > 10.");
+		
+		assertChangesSubrc(true, "FREE OBJECT ole NO FLUSH.");
+		assertChangesSubrc(true, "GET PROPERTY OF ole prop = dobj.");
+		assertChangesSubrc(true, "SET PROPERTY OF ole prop = dobj.");
+		
+		// User Dialogs
+		assertChangesSubrc(true, "GET CURSOR.");
+		assertChangesSubrc(true, "SET TITLEBAR title OF PROGRAM prog.");
+		assertChangesSubrc(true, "CALL SELECTION-SCREEN '0500' STARTING AT 10 10.");
+		
+		assertChangesSubrc(true, "DESCRIBE LIST NUMBER OF PAGES last_page.");
+		assertChangesSubrc(true, "MODIFY CURRENT LINE LINE FORMAT COLOR 5.");
+		assertChangesSubrc(true, "GET CURSOR LINE line.");
+		assertChangesSubrc(true, "READ LINE lv_line FIELD VALUE flag date INTO wa.");
+		assertChangesSubrc(true, "SCROLL LIST TO PAGE lv_page LINE lv_line.");
+		
+		// Enhancements
+		assertChangesSubrc(true, "CALL BADI lo_badi->any_method CHANGING cts_table = lts_table.");
+		
+		// Statements for Experts
+		assertChangesSubrc(true, "PROVIDE FIELDS col3 FROM itab1 INTO wa1 VALID flag1 BOUNDS col1 AND col2 FIELDS col3 FROM itab2 INTO wa2 VALID flag2 BOUNDS col1 AND col2 BETWEEN 2 AND 14."); 
+		assertChangesSubrc(true, buildCommand("PROVIDE FIELDS col3 FROM itab1 INTO wa1 VALID flag1 BOUNDS col1 AND col2 FIELDS col3 FROM itab2 INTO wa2 VALID flag2 BOUNDS col1 AND col2 BETWEEN 2 AND 14. ENDPROVIDE.").getNext());
+		
+		// Obsolete Statements
+		assertChangesSubrc(true, "CALL CUSTOMER-FUNCTION 'ABC'.");
+		assertChangesSubrc(true, "CALL DIALOG dialog IMPORTING p1 TO a1.");
+		assertChangesSubrc(true, "CATCH SYSTEM-EXCEPTIONS. ENDCATCH.");
+		assertChangesSubrc(true, "SEARCH text FOR 'abc' ABBREVIATED.");
+		assertChangesSubrc(true, "REFRESH itab FROM TABLE dbtab.");
+		assertChangesSubrc(true, "DEMAND val1 = f1 val2 = f2 FROM CONTEXT any_context.");
+		assertChangesSubrc(true, "EDITOR-CALL FOR lt_text BACKUP INTO lt_backup.");
+		assertChangesSubrc(true, "COMMUNICATION ACCEPT ID id.");
+		
+		// Internal Statements
+		assertChangesSubrc(true, "DELETE DYNPRO f.");
+		assertChangesSubrc(true, "DELETE REPORT prog.");
+		assertChangesSubrc(true, "GENERATE REPORT prog.");
+		assertChangesSubrc(true, "DELETE TEXTPOOL prog LANGUAGE lg STATE state.");
+		assertChangesSubrc(true, "LOAD REPORT prog PART 'BASE' INTO itab.");
+		assertChangesSubrc(true, "IMPORT DYNPRO h f e m ID id.");
+		assertChangesSubrc(true, "SCAN AND CHECK ABAP-SOURCE itab1 RESULT INTO itab2.");
+		assertChangesSubrc(true, "SYNTAX-CHECK FOR DYNPRO h f e m MESSAGE f1 LINE f2 WORD f3.");
+		assertChangesSubrc(true, "CALL 'ANY_FUNCTION' ID 'NAME' FIELD 'ANY_NAME' ID 'VALUE' FIELD any_value.");
+		
+		// ----------------------------------------------------------------------
+		// expect NO changes on SY-SUBRC for: 
+		
+		assertChangesSubrc(false, "\" comment.");
+		assertChangesSubrc(false, "a = xsdbool( a OR d).");
+		assertChangesSubrc(false, "IF line_exists( lts_table[ comp = 1 ] ). ENDIF.");
+		assertChangesSubrc(false, "a = sqrt( log( abs( ceil( floor( sign( 5 - 7 ) ) ) ) ) ) * sin( cos( lv_value ) ).");
+		assertChangesSubrc(false, "a = nmax( val1 = b val2 = nmin( val1 = c val2 = d ) ).");
+		assertChangesSubrc(false, "AT NEW comp. ENDAT."); // as opposed to 'a = NEW cl_any_class( ).'
+		assertChangesSubrc(false, "SHIFT text BY off PLACES.");
+		assertChangesSubrc(false, "SHIFT txt RIGHT DELETING TRAILING ` `.");
+	}
+	
+	private void assertChangesTabix(boolean expChanges, String code) {
+		assertChangesSyField(SyField.TABIX, expChanges, code);
+	}
+	
+	private void assertChangesTabix(boolean expChanges, Command command) {
+		assertChangesSyField(SyField.TABIX, expChanges, command);
+	}
+	
+	@Test
+	void testChangesSyTabix() {
+		// expect changes on SY-TABIX for: 
+		assertChangesTabix(true, "sy-tabix = lv_value.");
+		assertChangesTabix(true, "MOVE 1 TO sy-tabix.");
+		
+		assertChangesTabix(true, "ASSIGN itab[ 1 ] TO FIELD-SYMBOL(<ls_any>).");
+		assertChangesTabix(true, "ASSIGN its_table[ table_line = 1 ] TO <ls_other>.");
+		
+		assertChangesTabix(true, "LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.");
+		assertChangesTabix(true, buildCommand("LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.").getNext());
+		
+		assertChangesTabix(true, "READ TABLE its_table WITH KEY comp = 1 TRANSPORTING NO FIELDS.");
+		assertChangesTabix(true, "READ TABLE its_table INDEX 1 USING KEY sort_key ASSIGNING FIELD-SYMBOL(<ls_any>).");
+		
+		assertChangesTabix(true, "COLLECT ls_line INTO lts_table.");
+		assertChangesTabix(true, "COLLECT <ls_line> INTO lts_table ASSIGNING FIELD-SYMBOL(<ls_any>).");
+		
+		assertChangesTabix(true, "APPEND VALUE #( comp = 1 ) TO lt_table.");
+		assertChangesTabix(true, "APPEND ls_line TO lt_table ASSIGNING <ls_any>.");
+
+		assertChangesTabix(true, "PROVIDE FIELDS col3 FROM itab1 INTO wa1 VALID flag1 BOUNDS col1 AND col2 FIELDS col3 FROM itab2 INTO wa2 VALID flag2 BOUNDS col1 AND col2 BETWEEN 2 AND 14."); 
+		assertChangesTabix(true, buildCommand("PROVIDE FIELDS col3 FROM itab1 INTO wa1 VALID flag1 BOUNDS col1 AND col2 FIELDS col3 FROM itab2 INTO wa2 VALID flag2 BOUNDS col1 AND col2 BETWEEN 2 AND 14. ENDPROVIDE.").getNext()); 
+
+		// expect NO changes on SY-TABIX for: 
+		assertChangesTabix(false, "\" comment.");
+		assertChangesTabix(false, "ASSIGN lo_instance->mv_value TO <ls_any>.");
+		assertChangesTabix(false, "INSERT VALUE #( comp = 1 ) INTO TABLE lt_table.");
+		assertChangesTabix(false, "DELETE lt_table from 10.");
+		assertChangesTabix(false, "ls_line = lt_table[ 1 ].");
+		assertChangesTabix(false, "ls_line = lt_table[ id = 1 ].");
+	}
+	
+	private void assertChangesIndex(boolean expChanges, String code) {
+		assertChangesSyField(SyField.INDEX, expChanges, code);
+	}
+	
+	private void assertChangesIndex(boolean expChanges, Command command) {
+		assertChangesSyField(SyField.INDEX, expChanges, command);
+	}
+	
+	@Test
+	void testChangesSyIndex() {
+		// expect changes on SY-INDEX for: 
+		assertChangesIndex(true, "sy-index = lv_value.");
+		assertChangesIndex(true, "MOVE 1 TO sy-index.");
+		
+		assertChangesIndex(true, "DO 5 TIMES. ENDDO.");
+		assertChangesIndex(true, buildCommand("DO 5 TIMES. ENDDO.").getNext());
+		
+		assertChangesIndex(true, "WHILE a < 5. ENDWHILE.");
+		assertChangesIndex(true, buildCommand("WHILE a < 5. ENDWHILE.").getNext());
+		
+		// expect NO changes on SY-INDEX for: 
+		assertChangesIndex(false, "\" comment.");
+		assertChangesIndex(false, "LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.");
+		assertChangesIndex(false, "DELETE lt_table from 10.");
+		assertChangesIndex(false, "READ TABLE its_table WITH KEY comp = 1 TRANSPORTING NO FIELDS.");
+		assertChangesIndex(false, "ls_line = lt_table[ id = 1 ].");
+	}
+
+	private void assertChangesTFillOrTLeng(boolean expChanges, String code) {
+		assertChangesSyField(SyField.TFILL, expChanges, code);
+		assertChangesSyField(SyField.TLENG, expChanges, code);
+	}
+	
+	private void assertChangesTFillOrTLeng(boolean expChanges, Command command) {
+		assertChangesSyField(SyField.TFILL, expChanges, command);
+		assertChangesSyField(SyField.TLENG, expChanges, command);
+	}
+	
+	@Test
+	void testChangesSyTFillOrTLeng() {
+		// expect changes on SY-TFILL or SY-TLENG for: 
+		assertChangesTFillOrTLeng(true, "sy-tfill = lv_value.");
+		assertChangesTFillOrTLeng(true, "MOVE 1 TO sy-tfill.");
+		assertChangesTFillOrTLeng(true, "sy-tleng = lv_value.");
+		assertChangesTFillOrTLeng(true, "MOVE 1 TO sy-tleng.");
+		
+		assertChangesTFillOrTLeng(true, "LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.");
+		
+		assertChangesTFillOrTLeng(true, "READ TABLE its_table WITH KEY comp = 1 TRANSPORTING NO FIELDS.");
+		assertChangesTFillOrTLeng(true, "READ TABLE its_table INDEX 1 USING KEY sort_key ASSIGNING FIELD-SYMBOL(<ls_any>).");
+		
+		assertChangesTFillOrTLeng(true, "DESCRIBE TABLE lt_table.");
+		assertChangesTFillOrTLeng(true, "DESCRIBE TABLE lt_table LINES lv_any.");
+		assertChangesTFillOrTLeng(true, "DESCRIBE TABLE lt_table LINES lv_any OCCURS n.");
+
+		// expect NO changes on SY-TFILL or SY-TLENG for: 
+		assertChangesTFillOrTLeng(false, "\" comment.");
+		assertChangesTFillOrTLeng(false, buildCommand("LOOP AT lt_any INTO DATA(ls_any). ENDLOOP.").getNext());
+		assertChangesTFillOrTLeng(false, "LOOP AT GROUP <fs> INTO member. ENDLOOP.");
+		assertChangesTFillOrTLeng(false, "INSERT VALUE #( comp = 1 ) INTO TABLE lt_table.");
+		assertChangesTFillOrTLeng(false, "DELETE lt_table from 10.");
+		assertChangesTFillOrTLeng(false, "ls_line = lt_table[ 1 ].");
+	}
+
+	private void assertStressTestToken(String codeText, int tokenIndex, StressTestType stressTestType, String expCodeText) throws IntegrityBrokenException {
+		Command command = buildCommand(codeText);
+		boolean changed = command.insertStressTestTokenAt(tokenIndex, stressTestType);
+		assertTrue(changed);
+		assertEquals(expCodeText, command.toString());
+	}
+
+	private void assertNoStressTestToken(String codeText, int tokenIndex, StressTestType stressTestType) throws IntegrityBrokenException {
+		Command command = buildCommand(codeText);
+		boolean changed = command.insertStressTestTokenAt(tokenIndex, stressTestType);
+		assertFalse(changed);
+	}
+
+	@Test
+	void testInsertStressTestToken() throws IntegrityBrokenException {
+		assertStressTestToken("DATA lv_any TYPE i.", 0, StressTestType.LINE_END_COMMENT, "DATA \" test\r\n     lv_any TYPE i.");
+		assertStressTestToken("DATA lv_any TYPE i.", 0, StressTestType.COMMENT_LINE, "DATA\r\n* test\r\n     lv_any TYPE i.");
+		assertStressTestToken("DATA lv_any TYPE i.", 0, StressTestType.COLON, "DATA: lv_any TYPE i.");
+		assertStressTestToken("DATA lv_any TYPE i.", 0, StressTestType.PRAGMA, "DATA ##PRAGMA lv_any TYPE i.");
+
+		assertStressTestToken("DATA: lv_any TYPE i.", 0, StressTestType.COLON, "DATA:: lv_any TYPE i.");
+		assertStressTestToken("DATA: lv_any TYPE i.", 1, StressTestType.COLON, "DATA: lv_any: TYPE i.");
+		assertStressTestToken("DATA: lv_any TYPE i.", 2, StressTestType.COLON, "DATA: lv_any TYPE: i.");
+		assertStressTestToken("DATA: lv_any TYPE i.", 3, StressTestType.COLON, "DATA: lv_any TYPE i:.");
+
+		assertStressTestToken("any_method( ).", 0, StressTestType.COLON, "any_method(: ).");
+		assertStressTestToken("any_method( param = 1 ).", 0, StressTestType.COLON, "any_method(: param = 1 ).");
+		assertStressTestToken("any_method( param = 1 ).", 0, StressTestType.PRAGMA, "any_method( ##PRAGMA param = 1 ).");
+		assertStressTestToken("any_method( param = 1 ).", 3, StressTestType.PRAGMA, "any_method( param = 1 ##PRAGMA ).");
+
+		assertNoStressTestToken("DATA lv_any TYPE i. \" comment", 4, StressTestType.LINE_END_COMMENT);
+		assertNoStressTestToken("DATA lv_any TYPE i. \" comment", 4, StressTestType.COMMENT_LINE);
+		assertNoStressTestToken("SELECT * FROM any_table INTO TABLE @DATA(lv_any).", 0, StressTestType.COLON);
+		assertNoStressTestToken("DELETE FROM dtab WHERE id < 10.", 0, StressTestType.COLON);
+		assertNoStressTestToken("DATA: lv_any TYPE i.", 4, StressTestType.COLON);
+		assertNoStressTestToken("DATA lv_any TYPE i.", 4, StressTestType.PRAGMA);
+		
+		buildCommand("EXEC SQL." + SEP + " SQL." + SEP + "ENDEXEC.");
+		assertFalse(commands[1].insertStressTestTokenAt(0, StressTestType.COLON));
+	}
+
+	@Test
+	void testToString() throws UnexpectedSyntaxAfterChanges {
+		// ensure that the Command can be parsed with any line separator, 
+		// and that .toString(String) returns a result with the supplied line separator
+
+		final String CRLF = "\r\n";
+		final String LF = "\n";
+		
+		Command command = buildCommand("DATA: a TYPE i," + CRLF + "      b TYPE string.");
+		assertEquals("DATA: a TYPE i," + ABAP.LINE_SEPARATOR + "      b TYPE string.", command.toString());
+		assertEquals("DATA: a TYPE i," + CRLF + "      b TYPE string.", command.toString(CRLF));
+		assertEquals("DATA: a TYPE i," + LF + "      b TYPE string.", command.toString(LF));
+
+		command = buildCommand("DATA: a TYPE i," + LF + "      b TYPE string.");
+		assertEquals("DATA: a TYPE i," + ABAP.LINE_SEPARATOR + "      b TYPE string.", command.toString());
+		assertEquals("DATA: a TYPE i," + CRLF + "      b TYPE string.", command.toString(CRLF));
+		assertEquals("DATA: a TYPE i," + LF + "      b TYPE string.", command.toString(LF));
+	}
+	
+	@Test
+	void testContainsKeywordOnSiblings() {
+		assertTrue(buildCommand("DATA a TYPE i.").containsKeywordOnSiblings("DATA"));
+		assertFalse(buildCommand("DATA a TYPE i.").containsKeywordOnSiblings("a"));
+		assertTrue(buildCommand("DATA a TYPE i.").containsKeywordOnSiblings("TYPE"));
+		assertFalse(buildCommand("DATA a TYPE i.").containsKeywordOnSiblings("i"));
+		assertFalse(buildCommand("DATA a TYPE i.").containsKeywordOnSiblings("."));
+		assertFalse(buildCommand("DATA a TYPE i ##NO_TEXT.").containsKeywordOnSiblings("##NO_TEXT"));
+		assertFalse(buildCommand("any_method( IMPORTING it_any = lt_any ).").containsKeywordOnSiblings("IMPORTING"));
+	}
+	
+	@Test
+	void testContainsKeywordDeep() {
+		assertTrue(buildCommand("DATA a TYPE i.").containsKeywordDeep("DATA"));
+		assertTrue(buildCommand("DATA a TYPE i.").containsKeywordDeep("TYPE"));
+		assertFalse(buildCommand("any_method( IMPORTING it_any = lt_any ).").containsKeywordDeep("any_method("));
+		assertTrue(buildCommand("any_method( IMPORTING it_any = lt_any ).").containsKeywordDeep("IMPORTING"));
+		assertFalse(buildCommand("any_method( IMPORTING it_any = lt_any ).").containsKeywordDeep("="));
+	}
+	
+	@Test 
+	void testFindTokenOfType() {
+		assertEquals("DATA", buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.KEYWORD, "STATICS", "DATA").text);
+		assertEquals("a", buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.IDENTIFIER, "a", "b", "c").text);
+		assertEquals("TYPE", buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.KEYWORD, "TYPE", "TABLE").text);
+		assertEquals("i", buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.IDENTIFIER, "i", "j", "k").text);
+		assertEquals("it_any", buildCommand("any_method( IMPORTING it_any = lt_any ).").findTokenOfType(TokenType.IDENTIFIER, "lt_any", "it_any").text);
+		assertNull(buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.PRAGMA, "a", "i"));
+		assertNull(buildCommand("DATA a TYPE i.").findTokenOfType(TokenType.IDENTIFIER, "DATA", "TYPE"));
+	}
+
+	@Test
+	void testGetOpeningCommand() {
+		assertNull(buildCommand("DATA a TYPE i.").getOpeningCommand());
+		assertNull(buildCommand("START-OF-SELECTION.").getOpeningCommand());
+		
+		buildCommand("IF a = 1. a = 2. ENDIF");
+		assertEquals(commands[0], commands[2].getOpeningCommand());
+		assertNull(commands[0].getOpeningCommand());
+		assertNull(commands[1].getOpeningCommand());
+		
+		buildCommand("IF a = 1. a = 2. ELSEIF a = 2. a = 3. ELSE. a = 4. ENDIF");
+		assertEquals(commands[0], commands[2].getOpeningCommand());
+		assertEquals(commands[0], commands[4].getOpeningCommand());
+		assertEquals(commands[0], commands[6].getOpeningCommand());
+		assertNull(commands[0].getOpeningCommand());
+		assertNull(commands[1].getOpeningCommand());
+		assertNull(commands[3].getOpeningCommand());
+		assertNull(commands[5].getOpeningCommand());
+	}
+	
+	@Test
+	void testGetClosingCommand() {
+		assertNull(buildCommand("DATA a TYPE i.").getClosingCommand());
+		assertNull(buildCommand("START-OF-SELECTION.").getClosingCommand());
+		
+		buildCommand("IF a = 1. a = 2. ENDIF");
+		assertEquals(commands[2], commands[0].getClosingCommand());
+		assertNull(commands[1].getClosingCommand());
+		assertNull(commands[2].getClosingCommand());
+		
+		buildCommand("IF a = 1. a = 2. ELSEIF a = 2. a = 3. ELSE. a = 4. ENDIF");
+		assertEquals(commands[6], commands[0].getClosingCommand());
+		assertEquals(commands[6], commands[2].getClosingCommand());
+		assertEquals(commands[6], commands[4].getClosingCommand());
+		assertNull(commands[1].getClosingCommand());
+		assertNull(commands[3].getClosingCommand());
+		assertNull(commands[5].getClosingCommand());
+		assertNull(commands[6].getClosingCommand());
+	}
+	
+	@Test
+	void testFirstCodeTokenTextEqualsAny() {
+		Command command = buildCommand("a = 1.");
+		
+		assertTrue(command.firstCodeTokenTextEqualsAny("a", "b", "c"));
+		assertFalse(command.firstCodeTokenTextEqualsAny("=", "1", "."));
+		
+		command = buildCommand("* comment");
+		assertFalse(command.firstCodeTokenTextEqualsAny("a", "=", "1", "."));
+		assertFalse(command.firstCodeTokenTextEqualsAny("* comment", "\" comment"));
+	}
+	
+	@Test
+	void testGetCondensedDdlAnnotationName() {
+		Command command = buildCommand("@ AnyAnno . Sub" + SEP + "   . SubSub: {Name: 1} define view I_Any { }");
+		assertEquals("@AnyAnno.Sub.SubSub", command.getCondensedDdlAnnotationName(false));
+
+		command = buildCommand("// @ OtherAnno . Sub   . SubSub: {Name: 1}" + SEP + "define view I_Any { }");
+		assertEquals(null, command.getCondensedDdlAnnotationName(false));
+		assertEquals("@OtherAnno.Sub.SubSub", command.getCondensedDdlAnnotationName(true));
+
+		command = buildCommand("--@ ThirdAnno. Sub .SubSub" + SEP + "define view I_Any { }");
+		assertEquals(null, command.getCondensedDdlAnnotationName(false));
+		assertEquals("@ThirdAnno.Sub.SubSub", command.getCondensedDdlAnnotationName(true));
+	}
+
+	@Test 
+	void testIsDdlAnnotation() {
+		assertTrue(buildCommand("@Anno.AnyAnno: #('value')").isDdlAnnotation());
+		assertTrue(buildCommand("@<Anno.OtherAnno").isDdlAnnotation());
+		assertFalse(buildCommand("REPORT any_report.").isDdlAnnotation());
+	}
+
+	@Test 
+	void testIsDdlAnnotationAfterListElement() {
+		assertFalse(buildCommand("@Anno.AnyAnno: #('value')").isDdlAnnotationAfterListElement());
+		assertTrue(buildCommand("@<Anno.OtherAnno").isDdlAnnotationAfterListElement());
+		assertFalse(buildCommand("REPORT any_report.").isDdlAnnotationAfterListElement());
+	}
+	
+	@Test 
+	void testIsCommentedOutDdlAnnotation() {
+		assertTrue(buildCommand("--@Anno.AnyAnno: #('value')").isCommentedOutDdlAnnotation());
+		assertTrue(buildCommand("-- @ Anno . AnyAnno: #('value')").isCommentedOutDdlAnnotation());
+		assertTrue(buildCommand("// @< Anno.OtherAnno").isCommentedOutDdlAnnotation());
+		assertTrue(buildCommand("// @< Anno . OtherAnno").isCommentedOutDdlAnnotation());
+
+		assertFalse(buildCommand("@Anno.AnyAnno: #('value')").isCommentedOutDdlAnnotation());
+		assertFalse(buildCommand("@<Anno.OtherAnno").isCommentedOutDdlAnnotation());
+		assertFalse(buildCommand("REPORT any_report.").isCommentedOutDdlAnnotation());
+		assertFalse(buildCommand("//REPORT any_report.").isCommentedOutDdlAnnotation());
+	}
+
+	private void assertIsDdlSelectElement(Command command) {
+		assertTrue(command.isDdlListElement());
+		assertTrue(command.isDdlSelectElement());
+		assertFalse(command.isDdlParametersElement());
+	}
+
+	private void assertIsDdlParametersElement(Command command) {
+		assertTrue(command.isDdlListElement());
+		assertFalse(command.isDdlSelectElement());
+		assertTrue(command.isDdlParametersElement());
+	}
+
+	private void assertIsNoDdlListElement(Command command) {
+		assertFalse(command.isDdlListElement());
+		assertFalse(command.isDdlSelectElement());
+		assertFalse(command.isDdlParametersElement());
+	}
+
+	@Test
+	void testIsDdlSelectElement() {
+		buildCommand("define view I_Any with parameters @AnyAnno P_1 : any_type," + SEP + "--comment" + SEP + "P_2 : other_type"
+				+ " as select from dtab { "
+				+ "@OtherAnno AnyField @<ThirdAnno: 'value'," + SEP + "//comment" + SEP + "OtherField }");
+		
+		assertIsNoDdlListElement(commands[0]);		// define view I_Any with parameters
+		
+		assertIsNoDdlListElement(commands[1]); 		// @AnyAnno
+		assertIsDdlParametersElement(commands[2]);	// P_1 : any_type,
+		assertIsNoDdlListElement(commands[3]); 		// --comment
+		assertIsDdlParametersElement(commands[4]); 	// P_2 : other_type
+
+		assertIsNoDdlListElement(commands[5]);		// as select from dtab
+		assertIsNoDdlListElement(commands[6]);		// {
+		
+		assertIsNoDdlListElement(commands[7]); 		// @OtherAnno
+		assertIsDdlSelectElement(commands[8]);  		// AnyField
+		assertIsNoDdlListElement(commands[9]); 		// @<ThirdAnno: 'value',
+		assertIsNoDdlListElement(commands[10]); 		// //comment
+		assertIsDdlSelectElement(commands[11]);  		// OtherField
+		
+		assertIsNoDdlListElement(commands[12]);	// }
+
+		buildCommand("REPORT any_report.");
+		
+		assertIsNoDdlListElement(commands[0]); 	// ABAP, not DDL
+	}
+	
+	@Test
+	void testGetLanguage() {
+		// this mainly tests Tokenizer.previewLanguage()
+
+		// Data DefinitionLanguage
+		assertEquals(Language.DDL, buildCommand("@Anno.SubAnno").getLanguage());
+		assertEquals(Language.DDL, buildCommand("/* comment */").getLanguage());
+		assertEquals(Language.DDL, buildCommand("// comment").getLanguage());
+		assertEquals(Language.DDL, buildCommand("-- comment").getLanguage());
+
+		assertEquals(Language.DDL, buildCommand("define abstract entity Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("root custom entity Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("define root view Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("define table function Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("table function Other").getLanguage());
+		assertEquals(Language.DDL, buildCommand("define hierarchy Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("define transient view Any").getLanguage());
+
+		assertEquals(Language.DDL, buildCommand("extend abstract entity Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("extend custom entity Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("extend view Any").getLanguage());
+
+		assertEquals(Language.DDL, buildCommand("define table Any").getLanguage());
+		assertEquals(Language.DDL, buildCommand("define structure Any").getLanguage());
+
+		// Data Control Language
+		assertEquals(Language.DCL, buildCommand("define role Any").getLanguage());
+		assertEquals(Language.DCL, buildCommand("define accesspolicy Any").getLanguage());
+
+		assertEquals(Language.ABAP, buildCommand("\" comment").getLanguage());
+		assertEquals(Language.ABAP, buildCommand("* comment").getLanguage());
+		assertEquals(Language.ABAP, buildCommand("REPORT any_report.").getLanguage());
+	}
+	
+	@Test
+	void testStartOfPrecedingDdlAnnotations() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("define view I_AnyView as select from I_AnySource");
+		sb.append(SEP + "{");
+		sb.append(SEP + "// comment");
+		sb.append(SEP + "@Anno.anyAnno: 'value'");
+		sb.append(SEP + "@Anno.OtherAnno: 'value'");
+		sb.append(SEP + "key AnyField,");
+		sb.append(SEP + "@Anno.ThirdAnno: 'value'");
+		sb.append(SEP + "    OtherField");
+		sb.append(SEP + "}");
+		buildCommand(sb.toString());
+		
+		assertEquals(commands[2], commands[2].getStartOfPrecedingDdlAnnotations());
+		
+		assertEquals(commands[3], commands[3].getStartOfPrecedingDdlAnnotations()); 
+		assertEquals(commands[3], commands[4].getStartOfPrecedingDdlAnnotations()); 
+		assertEquals(commands[3], commands[5].getStartOfPrecedingDdlAnnotations());
+		
+		assertEquals(commands[6], commands[6].getStartOfPrecedingDdlAnnotations()); 
+		assertEquals(commands[6], commands[7].getStartOfPrecedingDdlAnnotations()); 
+	}
+
+	private void buildViewWithDdlComments() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("define view I_AnyView as select from I_AnySource");
+		sb.append(SEP + "{");
+		sb.append(SEP + "  // comment 1");
+		sb.append(SEP + "  /* comment 2 */");
+		sb.append(SEP + "  /* multi-line");
+		sb.append(SEP + "     comment 3 */");
+		sb.append(SEP + "  AnyField");
+		sb.append(SEP + "}");
+		buildCommand(sb.toString());
+	}
+	
+	@Test
+	void testStartsMultiLineDdlComment() {
+		assertFalse(buildCommand("REPORT any_report.").startsMultiLineDdlComment());
+
+		buildViewWithDdlComments();	
+		assertFalse(commands[2].startsMultiLineDdlComment());
+		assertFalse(commands[3].startsMultiLineDdlComment());
+		assertTrue(commands[4].startsMultiLineDdlComment());
+		assertFalse(commands[5].startsMultiLineDdlComment());
+		assertFalse(commands[6].startsMultiLineDdlComment());
+	}
+	
+	@Test
+	void testEndsMultiLineDdlComment() {
+		assertFalse(buildCommand("REPORT any_report.").endsMultiLineDdlComment());
+
+		buildViewWithDdlComments();	
+		assertFalse(commands[2].endsMultiLineDdlComment());
+		assertTrue(commands[3].endsMultiLineDdlComment());
+		assertFalse(commands[4].endsMultiLineDdlComment());
+		assertTrue(commands[5].endsMultiLineDdlComment());
+		assertFalse(commands[6].endsMultiLineDdlComment());
+	}
+	
+	@Test
+	void testLastOfMultiLineDdlComment() {
+		assertNull(buildCommand("REPORT any_report.").getLastOfMultiLineDdlComment());
+
+		buildViewWithDdlComments();	
+		assertNull(commands[2].getLastOfMultiLineDdlComment());
+		assertNull(commands[3].getLastOfMultiLineDdlComment());
+		assertEquals(commands[5], commands[4].getLastOfMultiLineDdlComment());
+		assertNull(commands[5].getLastOfMultiLineDdlComment());
+		assertNull(commands[6].getLastOfMultiLineDdlComment());
+	}
+	
+	@Test
+	void testIsTestingAnnotation() {
+		assertFalse(buildCommand("\" comment").isTestingAnnotation());
+		assertFalse(buildCommand("\"! comment").isTestingAnnotation());
+		assertFalse(buildCommand("\"! testing").isTestingAnnotation());
+		assertFalse(buildCommand("\"! testing I_AnyView").isTestingAnnotation());
+		
+		assertTrue(buildCommand("\"!@testing I_AnyView").isTestingAnnotation());
+		assertTrue(buildCommand("\"!  @  testing I_AnyView").isTestingAnnotation());
+	}
+	
+	@Test
+	void testGetInitialBlockLevel() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("TYPES BEGIN OF ty_s_any.");
+		sb.append(SEP + "TYPES a TYPE i.");
+		sb.append(SEP + "TYPES BEGIN OF ty_s_inner.");
+		sb.append(SEP + "TYPES b TYPE i.");
+		sb.append(SEP + "TYPES END OF ty_s_inner.");
+		sb.append(SEP + "TYPES END OF ty_s_any.");
+		sb.append(SEP + "TYPES ty_other TYPE i.");
+		buildCommand(sb.toString());
+		assertEquals(0, commands[0].getInitialBlockLevel());
+		assertEquals(1, commands[1].getInitialBlockLevel());
+		assertEquals(1, commands[2].getInitialBlockLevel());
+		assertEquals(2, commands[3].getInitialBlockLevel());
+		assertEquals(2, commands[4].getInitialBlockLevel());
+		assertEquals(1, commands[5].getInitialBlockLevel());
+		assertEquals(0, commands[6].getInitialBlockLevel());
+	}
+	
+	@Test
+	void testGetSourceLineBreaks() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("DATA a TYPE i.");
+		sb.append(SEP + "a = 1.");
+		sb.append(SEP + SEP + "a = 2.");
+		sb.append(" a = 3.");
+		buildCommand(sb.toString());
+		
+		for (Command command : commands)
+			command.firstToken.setLineBreaks(1);
+		
+		assertEquals(0, commands[0].getSourceLineBreaksBefore());
+		assertEquals(1, commands[1].getSourceLineBreaksBefore());
+		assertEquals(2, commands[2].getSourceLineBreaksBefore());
+		assertEquals(0, commands[3].getSourceLineBreaksBefore());
+	}
+	
+	@Test
+	void testIsCommentLine() {
+		assertTrue(buildCommand("\" comment").isCommentLine());
+		assertTrue(buildCommand("* comment").isCommentLine());
+		assertFalse(buildCommand("REPORT any_report").isCommentLine());
+
+		assertTrue(buildCommand("// comment").isCommentLine());
+		assertTrue(buildCommand("/* comment */").isCommentLine());
+		assertTrue(buildCommand("/* comment */ // other comment in same line").isCommentLine());
+		assertFalse(buildCommand("@Annotation.subAnno: 'value'").isCommentLine());
+	}
+	
+	@Test
+	void testEndsLoop() {
+		buildCommand("LOOP AT lt_any INTO DATA(ls_any). IF a = 1. ENDIF. ENDLOOP.");
+		assertFalse(commands[0].endsLoop());
+		assertFalse(commands[1].endsLoop());
+		assertFalse(commands[2].endsLoop());
+		assertTrue(commands[3].endsLoop());
+	}
+	
+	@Test
+	void testIsDcl() {
+		assertFalse(buildCommand("REPORT any_report.").isDcl());
+		assertFalse(buildCommand("define view I_AnyView as select from I_AnySource { }").isDcl());
+		assertTrue(buildCommand("define role I_AnyView grant select on I_AnySource where ( AnyField ) = aspect pfcg_auth( ANY, OTHER, THIRD, ACTVT = '03' );").isDcl());
+	}
+	
+	@Test
+	void testLastCodeTokenIsKeyword() {
+		assertFalse(buildCommand("@Annotation.subAnno: 'value'").lastCodeTokenIsKeyword("define"));
+		assertFalse(buildCommand("// comment").lastCodeTokenIsKeyword("define"));
+		assertFalse(buildCommand("// comment").lastCodeTokenIsAnyKeyword("define", "view"));
+		
+		buildCommand("define view I_AnyView as select from I_AnySource { AnyField } where AnyField is not initial");
+		Command lastCommand = commands[commands.length - 1];
+		assertFalse(lastCommand.lastCodeTokenIsKeyword("null"));
+		assertTrue(lastCommand.lastCodeTokenIsKeyword("initial"));
+
+		assertFalse(lastCommand.lastCodeTokenIsAnyKeyword("is", "null"));
+		assertTrue(lastCommand.lastCodeTokenIsAnyKeyword("initial", "null"));
+	}
+}
