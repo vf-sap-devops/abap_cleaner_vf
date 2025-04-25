@@ -179,6 +179,7 @@ public abstract class Rule {
          new AlignSelectClausesRule(profile),
          new AlignSelectFromRule(profile),
          new AlignSelectListsRule(profile),
+         new AlignVattenfallRule(profile),
          new AlignParametersRule(profile),
          new AlignLogicalExpressionsRule(profile),
          new AlignCondExpressionsRule(profile),

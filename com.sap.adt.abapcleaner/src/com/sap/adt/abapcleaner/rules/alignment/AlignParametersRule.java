@@ -12,7 +12,6 @@ import com.sap.adt.abapcleaner.parser.Command;
 import com.sap.adt.abapcleaner.parser.Term;
 import com.sap.adt.abapcleaner.parser.Token;
 import com.sap.adt.abapcleaner.parser.TokenSearch;
-import com.sap.adt.abapcleaner.parser.TokenType;
 import com.sap.adt.abapcleaner.programbase.IntegrityBrokenException;
 import com.sap.adt.abapcleaner.programbase.UnexpectedSyntaxAfterChanges;
 import com.sap.adt.abapcleaner.programbase.UnexpectedSyntaxBeforeChanges;
@@ -208,6 +207,8 @@ public class AlignParametersRule extends RuleForCommands {
 			"PutFunctionalCallKeywordsOnOwnLine", "Functional call: put keywords (EXPORTING etc.) on own line", false);
 	final ConfigBoolValue configAlignAssignments = new ConfigBoolValue(this, "AlignAssignments", "Align assignments",
 			true, true, LocalDate.of(2023, 3, 3));
+	final ConfigBoolValue configIndentParamOnlyOnce = new ConfigBoolValue(this, "IndentParamOnlyOnce",
+			"Indent parameters always once", true);
 	final ConfigBoolValue configAlignAcrossTableRows = new ConfigBoolValue(this, "AlignAcrossTableRows",
 			"Align assignments across rows of table constructors", true, false, LocalDate.of(2023, 6, 9));
 	final ConfigEnumValue<ComponentsOnSingleLine> configKeepComponentsOnSingleLine = new ConfigEnumValue<ComponentsOnSingleLine>(
@@ -226,8 +227,9 @@ public class AlignParametersRule extends RuleForCommands {
 	private final ConfigValue[] configValues = new ConfigValue[] { configMaxLineLength,
 			configMaxLineLengthForSingleLine, configMaxParamCountBehindProceduralCall,
 			configMaxParamCountBehindFunctionalCall, configPutProceduralCallKeywordsOnOwnLine,
-			configPutFunctionalCallKeywordsOnOwnLine, configAlignAssignments, configAlignAcrossTableRows,
-			configKeepComponentsOnSingleLine, configKeepOtherOneLiners, configAllowContentLeftOfAssignOp };
+			configPutFunctionalCallKeywordsOnOwnLine, configAlignAssignments, configIndentParamOnlyOnce,
+			configAlignAcrossTableRows, configKeepComponentsOnSingleLine, configKeepOtherOneLiners,
+			configAllowContentLeftOfAssignOp };
 
 	@Override
 	public ConfigValue[] getConfigValues() {
@@ -238,51 +240,36 @@ public class AlignParametersRule extends RuleForCommands {
 		return ContentLeftOfAssignOp.forValue(configAllowContentLeftOfAssignOp.getValue());
 	}
 
-	private Token addDataKeyword(Token dataToken, AlignTable table) throws UnexpectedSyntaxException {
-
-		Token assignmentToken = dataToken.getNextCodeSibling();
-		AlignCell keywordCell;
-
-		while (!assignmentToken.isAssignmentOperator()) {
-			assignmentToken = assignmentToken.getNextCodeSibling();
-		}
-//		if (nextToken != null && nextToken.isChainColon()) {
-//			Token chainColon = nextToken;
-//			try {
-//				keywordCell = new AlignCellTerm(Term.createForTokenRange(token, chainColon));
-//			} catch (UnexpectedSyntaxException e) {
-//				throw new UnexpectedSyntaxBeforeChanges(this, e);
-//			}
-//			token = chainColon;
-//		} else {
-//			keywordCell = new AlignCellToken(token);
-//		}
-
-		keywordCell = new AlignCellTerm(Term.createForTokenRange(dataToken, assignmentToken));
-		AlignLine line = table.addLine();
-		line.setCell(ValueColumns.KEYWORD.getValue(), keywordCell);
-		return assignmentToken;
-	}
-
-	private Token addExpression(Token expressionToken, Token endToken, AlignTable table)
-			throws UnexpectedSyntaxException {
-		AlignLine line = table.addLine();
-//		Token periodToken = expressoinToken.getNextCodeSibling();
+//	private Token addDataKeyword(Token dataToken, AlignTable table) throws UnexpectedSyntaxException {
 //
-//		while (!periodToken.isPeriod() && periodToken != null)
-//			periodToken = periodToken.getNextCodeSibling();
+//		Token assignmentToken = dataToken.getNextCodeSibling();
+//		AlignCell keywordCell;
+//
+//		while (!assignmentToken.isAssignmentOperator()) {
+//			assignmentToken = assignmentToken.getNextCodeSibling();
+//		}
+//
+//		keywordCell = new AlignCellTerm(Term.createForTokenRange(dataToken, assignmentToken));
+//		AlignLine line = table.addLine();
+//		line.setCell(ValueColumns.KEYWORD.getValue(), keywordCell);
+//		return assignmentToken;
+//	}
 
-		if (expressionToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR")) {
-			Token forToken = expressionToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
-			forToken.setWhitespace(1, expressionToken.getStartIndexInLine() + 2);
-		}
-
-		AlignCell expressionCell = new AlignCellTerm(Term.createForTokenRange(expressionToken, endToken));
-
-		line.setCell(ValueColumns.EXPRESSION.getValue(), expressionCell);
-
-		return endToken;
-	}
+//	private Token addExpression(Token expressionToken, Token endToken, AlignTable table)
+//			throws UnexpectedSyntaxException {
+//		AlignLine line = table.addLine();
+//
+//		if (expressionToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR")) {
+//			Token forToken = expressionToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
+//			forToken.setWhitespace(1, expressionToken.getStartIndexInLine() + 2);
+//		}
+//
+//		AlignCell expressionCell = new AlignCellTerm(Term.createForTokenRange(expressionToken, endToken));
+//
+//		line.setCell(ValueColumns.EXPRESSION.getValue(), expressionCell);
+//
+//		return endToken;
+//	}
 
 	public AlignParametersRule(Profile profile) {
 		super(profile);
@@ -402,14 +389,14 @@ public class AlignParametersRule extends RuleForCommands {
 			}
 		}
 
-		// align VALUE statement
-		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")) {
-			Token parentToken = firstCode;
-			int baseIndent = command.getFirstToken().getStartIndexInLine();
-			if (alignValue(code, command, parentToken, period, baseIndent, baseIndent)) {
-				changed = true;
-			}
-		}
+//		// align VALUE statement
+//		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")) {
+//			Token parentToken = firstCode;
+//			int baseIndent = command.getFirstToken().getStartIndexInLine();
+//			if (alignValue(code, command, parentToken, period, baseIndent, baseIndent)) {
+//				changed = true;
+//			}
+//		}
 
 		// align FOR statements
 //		if (firstCode.matchesDeep(true, TokenSearch.ASTERISK, "VALUE", TokenSearch.ASTERISK, "FOR",
@@ -423,16 +410,16 @@ public class AlignParametersRule extends RuleForCommands {
 //
 //		}
 
-		// align method chains
-		if (firstCode.isIdentifier() && firstCode.getText().endsWith("(")
-				&& firstCode.getNextCodeSibling().isIdentifier()
-				&& firstCode.getNextCodeSibling().getText().startsWith(")->")) {
-			Token parentToken = firstCode;
-			int baseIndent = command.getFirstToken().getStartIndexInLine();
-			if (alignMethodChain(code, command, parentToken, period, baseIndent, baseIndent)) {
-				changed = true;
-			}
-		}
+//		// align method chains
+//		if (firstCode.isIdentifier() && firstCode.getText().endsWith("(")
+//				&& firstCode.getNextCodeSibling().isIdentifier()
+//				&& firstCode.getNextCodeSibling().getText().startsWith(")->")) {
+//			Token parentToken = firstCode;
+//			int baseIndent = command.getFirstToken().getStartIndexInLine();
+//			if (alignMethodChain(code, command, parentToken, period, baseIndent, baseIndent)) {
+//				changed = true;
+//			}
+//		}
 
 		// align assignments in parentheses (including parentheses as parts of the above
 		// cases!)
@@ -839,125 +826,125 @@ public class AlignParametersRule extends RuleForCommands {
 		return changed;
 	}
 
-	private final Boolean alignValue(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
-			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
-		Command[] changedCommands = null;
-		boolean changed = false;
-		AlignTable table = new AlignTable(2);
-		table.addLine();
+//	private final Boolean alignValue(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
+//			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
+//		Command[] changedCommands = null;
+//		boolean changed = false;
+//		AlignTable table = new AlignTable(2);
+//		table.addLine();
+//
+//		try {
+//			Token token = command.getFirstCodeToken();
+//
+//			token = addDataKeyword(token, table);
+//
+//			token = token.getNextCodeToken();
+//			if (!token.isKeyword("VALUE")) {
+//				return false;
+//			}
+//
+//			token = addExpression(token, command.getLastNonCommentToken(), table);
+//
+//			AlignColumn column = table.getColumn(0);
+//
+//			column.setForceLineBreakAfter(true);
+//
+//			changedCommands = table.align(baseIndent, minimumIndent, true);
+//
+//			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
+//																			// current command
+//				changed = true;
+//			}
+//
+//			return changed;
+//
+//		} catch (UnexpectedSyntaxException ex) {
+//			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
+//			return false;
+//		}
+//	}
+//
+//	private final Boolean alignMethodChain(Code code, Command command, Token parentToken, Token endToken,
+//			int baseIndent, int minimumIndent) throws UnexpectedSyntaxAfterChanges {
+//		boolean changed = false;
+//		Command[] changedCommands;
+//		AlignTable table = new AlignTable(2);
+//		table.addLine();
+//		try {
+//			Token token = command.getFirstCodeToken();
+//
+//			while (!token.isPeriod() && token != null) {
+//
+//				AlignCell chainCell = new AlignCellToken(token);
+//				AlignCell variablesCell;
+//				AlignLine line;
+//				if (token.getText().equals(")") && token.getNextSibling().isPeriod())
+//					break;
+//
+//				line = table.addLine();
+//
+//				line.setCell(0, chainCell);
+//				if (!token.equals(command.getFirstToken())) {
+//					chainCell.setAdditionalIndent(baseIndent + 2);
+//				}
+//
+//				if (token.getFirstChild() != null) {
+//					variablesCell = new AlignCellTerm(
+//							Term.createForTokenRange(token.getFirstChild(), token.getLastChild()));
+//					line = table.addLine();
+//					line.setCell(1, variablesCell);
+//				}
+//
+//				token = token.getNextSibling();
+//			}
+//
+//			AlignColumn column = table.getColumn(0);
+//
+//			column.setForceLineBreakAfter(true);
+//
+//			changedCommands = table.align(baseIndent, minimumIndent, true);
+//
+//			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
+//																			// current command
+//				changed = true;
+//			}
+//
+//		} catch (UnexpectedSyntaxException ex) {
+//			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
+//			return false;
+//		}
+//		return changed;
+//
+//	}
 
-		try {
-			Token token = command.getFirstCodeToken();
-
-			token = addDataKeyword(token, table);
-
-			token = token.getNextCodeToken();
-			if (!token.isKeyword("VALUE")) {
-				return false;
-			}
-
-			token = addExpression(token, command.getLastNonCommentToken(), table);
-
-			AlignColumn column = table.getColumn(0);
-
-			column.setForceLineBreakAfter(true);
-
-			changedCommands = table.align(baseIndent, minimumIndent, true);
-
-			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
-																			// current command
-				changed = true;
-			}
-
-			return changed;
-
-		} catch (UnexpectedSyntaxException ex) {
-			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
-			return false;
-		}
-	}
-
-	private final Boolean alignMethodChain(Code code, Command command, Token parentToken, Token endToken,
-			int baseIndent, int minimumIndent) throws UnexpectedSyntaxAfterChanges {
-		boolean changed = false;
-		Command[] changedCommands;
-		AlignTable table = new AlignTable(2);
-		table.addLine();
-		try {
-			Token token = command.getFirstCodeToken();
-
-			while (!token.isPeriod() && token != null) {
-
-				AlignCell chainCell = new AlignCellToken(token);
-				AlignCell variablesCell;
-				AlignLine line;
-				if (token.getText().equals(")") && token.getNextSibling().isPeriod())
-					break;
-
-				line = table.addLine();
-
-				line.setCell(0, chainCell);
-				if (!token.equals(command.getFirstToken())) {
-					chainCell.setAdditionalIndent(baseIndent + 2);
-				}
-
-				if (token.getFirstChild() != null) {
-					variablesCell = new AlignCellTerm(
-							Term.createForTokenRange(token.getFirstChild(), token.getLastChild()));
-					line = table.addLine();
-					line.setCell(1, variablesCell);
-				}
-
-				token = token.getNextSibling();
-			}
-
-			AlignColumn column = table.getColumn(0);
-
-			column.setForceLineBreakAfter(true);
-
-			changedCommands = table.align(baseIndent, minimumIndent, true);
-
-			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
-																			// current command
-				changed = true;
-			}
-
-		} catch (UnexpectedSyntaxException ex) {
-			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
-			return false;
-		}
-		return changed;
-
-	}
-
-	private final Boolean alignFor(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
-			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
-		boolean changed = false;
-		Command[] changedCommands;
-		AlignTable table = new AlignTable(1);
-		AlignLine line = table.addLine();
-
-		try {
-			Token startToken = command.getFirstCodeToken().getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
-			Token finishToken = startToken.getParent().getLastChild();
-
-			AlignCell forCell = new AlignCellTerm(Term.createForTokenRange(startToken, finishToken));
-			line.setCell(0, forCell);
-
-			changedCommands = table.align(baseIndent + 2, minimumIndent, true);
-
-			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
-				// current command
-				changed = true;
-			}
-
-		} catch (UnexpectedSyntaxException ex) {
-			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
-			return false;
-		}
-		return changed;
-
-	}
+//	private final Boolean alignFor(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
+//			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
+//		boolean changed = false;
+//		Command[] changedCommands;
+//		AlignTable table = new AlignTable(1);
+//		AlignLine line = table.addLine();
+//
+//		try {
+//			Token startToken = command.getFirstCodeToken().getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
+//			Token finishToken = startToken.getParent().getLastChild();
+//
+//			AlignCell forCell = new AlignCellTerm(Term.createForTokenRange(startToken, finishToken));
+//			line.setCell(0, forCell);
+//
+//			changedCommands = table.align(baseIndent + 2, minimumIndent, true);
+//
+//			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
+//				// current command
+//				changed = true;
+//			}
+//
+//		} catch (UnexpectedSyntaxException ex) {
+//			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
+//			return false;
+//		}
+//		return changed;
+//
+//	}
 
 	private Token findStartOfNextRow(Token endOfRow) throws UnexpectedSyntaxException {
 		// find next table row by skipping any assignments 'component =
@@ -1265,9 +1252,12 @@ public class AlignParametersRule extends RuleForCommands {
 			ContentType contentType, AlignTable table, ArrayList<Token> otherLineStarts) {
 		AlignColumn keywordColumn = table.getColumn(Columns.KEYWORD.getValue());
 		boolean hasKeywords = !keywordColumn.isEmpty();
-		int addIndent = ABAP.INDENT_STEP;
-//				(contentType == ContentType.ROW_IN_VALUE_OR_NEW_CONSTRUCTOR
-//				|| contentType == ContentType.GROUP_KEY || hasKeywords) ? ABAP.INDENT_STEP : 2 * ABAP.INDENT_STEP;
+		int addIndent = (configIndentParamOnlyOnce
+				.getValue() == true
+						? ABAP.INDENT_STEP
+						: (contentType == ContentType.ROW_IN_VALUE_OR_NEW_CONSTRUCTOR
+								|| contentType == ContentType.GROUP_KEY || hasKeywords) ? ABAP.INDENT_STEP
+										: 2 * ABAP.INDENT_STEP);
 
 		// determine whether to continue on the same line after parentToken (this may be
 		// revised later if there is not enough space)

@@ -4,7 +4,8 @@ public enum RuleSource  {
    ABAP_STYLE_GUIDE,
    CODE_PAL_FOR_ABAP,
    ABAP_KEYWORD_DOCU,
-   ABAP_CLEANER;
+   ABAP_CLEANER,
+   VATTENFALL_SPECIFIC;
 
    public static final int SIZE = java.lang.Integer.SIZE;
 
