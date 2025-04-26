@@ -22,7 +22,8 @@ Require-Bundle: com.sap.adt.abapcleaner;bundle-version="1.16.3",
  com.sap.adt.util.ui;bundle-version="3.38.2",
  com.sap.adt.tools.core.ui;bundle-version="3.38.2",
  com.sap.adt.tools.abapsource;bundle-version="3.38.2",
- com.sap.adt.tools.abapsource.ui;bundle-version="3.38.2"
+ com.sap.adt.tools.abapsource.ui;bundle-version="3.38.2",
+ com.sap.rnd.rndrt;bundle-version="1.118.1",
+ com.sap.adt.tools.abapsource.parser;bundle-version="3.50.0",
+ org.eclipse.m2e.pde.connector;bundle-version="2.2.0"
 Automatic-Module-Name: com.sap.adt.abapcleaner.gui
-Import-Package: com.sap.adt.tools.abapsource.parser.padfileresolver.internal,
- com.sap.rnd.rndrt

@@ -46,7 +46,7 @@ public class AlignVattenfallRule extends RuleForCommands {
 		}
 	}
 
-	public static final int MAX_VALUE_COLUMN_COUNT = 3;
+	public static final int MAX_VALUE_COLUMN_COUNT = 2;
 
 	public static final int MAX_METHOD_CHAIN_COLUMN_COUNT = 2;
 
@@ -56,13 +56,10 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 	private final static RuleReference[] references = new RuleReference[] {
 			new RuleReference(RuleSource.VATTENFALL_SPECIFIC,
-					"Put the Value statement on the next line from the created variable assignment",
-					"#vattenfall-specific-value-statment"),
-			new RuleReference(RuleSource.VATTENFALL_SPECIFIC, "Each method call in a method chain gets its own line",
-					"#vattenfall-specific-method-chain"),
+					"Put the Value statement on the next line from the created variable assignment"),
+			new RuleReference(RuleSource.VATTENFALL_SPECIFIC, "Each method call in a method chain gets its own line"),
 			new RuleReference(RuleSource.VATTENFALL_SPECIFIC,
-					"Put the Value statement on the next line from the created variable assignment",
-					"#vattenfall-specific-for-statement") };
+					"Put the Value statement on the next line from the created variable assignment") };
 
 //	private class TableStart {
 //		public final int startIndent;
@@ -164,7 +161,7 @@ public class AlignVattenfallRule extends RuleForCommands {
 		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")) {
 			Token parentToken = firstCode;
 			int baseIndent = command.getFirstToken().getStartIndexInLine();
-			if (alignValue(code, command, parentToken, period, baseIndent, baseIndent)) {
+			if (alignValueAndFor(code, command, parentToken, period, baseIndent, baseIndent)) {
 				changed = true;
 			}
 		}
@@ -173,7 +170,8 @@ public class AlignVattenfallRule extends RuleForCommands {
 		// lo_object=>get_instance()->set_data( is_data = ls_data)->execute().
 		if (firstCode.isIdentifier() && firstCode.getText().endsWith("(")
 				&& firstCode.getNextCodeSibling().isIdentifier()
-				&& firstCode.getNextCodeSibling().getText().startsWith(")->")) {
+				&& firstCode.getNextCodeSibling().getText().startsWith(")->")
+				&& configMethodChainingOnNewLine.getValue()) {
 			Token parentToken = firstCode;
 			int baseIndent = command.getFirstToken().getStartIndexInLine();
 			if (alignMethodChain(code, command, parentToken, period, baseIndent, baseIndent)) {
@@ -210,13 +208,13 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 		AlignCell expressionCell = new AlignCellTerm(Term.createForTokenRange(expressionToken, endToken));
 
-		line.setCell(ValueColumns.EXPRESSION.getValue(), expressionCell);
+		line.setCell(ValueColumns.VALUE_KEYWORD.getValue(), expressionCell);
 
 		return endToken;
 	}
 
-	private final Boolean alignValue(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
-			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
+	private final Boolean alignValueAndFor(Code code, Command command, Token parentToken, Token endToken,
+			int baseIndent, int minimumIndent) throws UnexpectedSyntaxAfterChanges {
 		Command[] changedCommands = null;
 		boolean changed = false;
 		AlignTable table = new AlignTable(MAX_VALUE_COLUMN_COUNT);
@@ -224,8 +222,9 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 		try {
 			Token token = command.getFirstCodeToken();
-
-			token = addDataKeyword(token, table);
+			if (configValueStatementOnNewLine.getValue()) {
+				token = addDataKeyword(token, table);
+			}
 
 			token = token.getNextCodeToken();
 			if (!token.isKeyword("VALUE")) {

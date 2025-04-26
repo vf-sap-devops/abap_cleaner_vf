@@ -5,10 +5,9 @@ Bundle-SymbolicName: com.sap.adt.abapcleaner;singleton:=true
 Bundle-Version: 1.21.2.qualifier
 Bundle-Vendor: %Provider-Name
 Bundle-Localization: plugin
-Bundle-RequiredExecutionEnvironment: JavaSE-17
+Bundle-RequiredExecutionEnvironment: JavaSE-21
 Bundle-ActivationPolicy: lazy
-Eclipse-ExtensibleAPI: true
-Require-Bundle: com.sap.rnd.rndrt;bundle-version="1.108.0",
+Require-Bundle: com.sap.rnd.rndrt,
  com.sap.adt.tools.abapsource.parser;bundle-version="3.38.2",
  org.eclipse.jface.text,
  org.eclipse.core.runtime
