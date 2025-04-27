@@ -112,12 +112,14 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 	@Override
 	public String getExample() {
-		return "" + LINE_SEP + "    DATA(lt_customer_ids) = VALUE #( ( 1 ) ( 2 ) ( 3 ) )." + LINE_SEP + LINE_SEP
-				+ "    DATA(lt_r_customer_ids) = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )."
-				+ LINE_SEP + LINE_SEP
-				+ "    lt_r_customer_ids = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )."
-				+ LINE_SEP + LINE_SEP + "    lo_object=>get_instance()->set_data( is_data = ls_data)->execute()."
-				+ LINE_SEP;
+		return "" + LINE_SEP + "    DATA(lt_customer_ids) = VALUE #( ( 1 ) ( 2 ) ( 3 ) )." + 
+					LINE_SEP + 
+					LINE_SEP + "    DATA(lt_r_customer_ids) = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )." +
+					LINE_SEP + 
+					LINE_SEP + "    lt_r_customer_ids = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )." +
+					LINE_SEP + 
+					LINE_SEP + "    lo_object=>get_instance()->set_data( is_data = ls_data)->execute()." +
+					LINE_SEP;
 	}
 
 	final ConfigBoolValue configValueStatementOnNewLine = new ConfigBoolValue(this, "ValueStatementOnNewLine",
@@ -126,9 +128,11 @@ public class AlignVattenfallRule extends RuleForCommands {
 			"Put method calls each on a new line", true);
 	final ConfigBoolValue configForStatementsOnNewLine = new ConfigBoolValue(this, "ForStatementsOnNewLine",
 			"Put FOR statements on its own line", true);
+	final ConfigBoolValue configIndentParamOnlyOnce = new ConfigBoolValue(this, "IndentParamOnlyOnce",
+			"Indent parameters always once( this is applied in Align parameters and components)", true);
 
 	private final ConfigValue[] configValues = new ConfigValue[] { configValueStatementOnNewLine,
-			configMethodChainingOnNewLine, configForStatementsOnNewLine, };
+			configMethodChainingOnNewLine, configForStatementsOnNewLine, configIndentParamOnlyOnce };
 
 	@Override
 	public ConfigValue[] getConfigValues() {
@@ -211,11 +215,6 @@ public class AlignVattenfallRule extends RuleForCommands {
 	private Token addExpression(Token expressionToken, Token endToken, AlignTable table)
 			throws UnexpectedSyntaxException {
 		AlignLine line = table.addLine();
-
-//		if (expressionToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR") && configForStatementsOnNewLine.getValue()) {
-//			Token forToken = expressionToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
-//			forToken.setWhitespace(1, expressionToken.getStartIndexInLine() + 2);
-//		}
 
 		AlignCell expressionCell = new AlignCellTerm(Term.createForTokenRange(expressionToken, endToken));
 

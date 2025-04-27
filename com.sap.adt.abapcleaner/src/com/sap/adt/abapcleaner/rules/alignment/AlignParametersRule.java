@@ -208,8 +208,7 @@ public class AlignParametersRule extends RuleForCommands {
 			"PutFunctionalCallKeywordsOnOwnLine", "Functional call: put keywords (EXPORTING etc.) on own line", false);
 	final ConfigBoolValue configAlignAssignments = new ConfigBoolValue(this, "AlignAssignments", "Align assignments",
 			true, true, LocalDate.of(2023, 3, 3));
-	final ConfigBoolValue configIndentParamOnlyOnce = new ConfigBoolValue(this, "IndentParamOnlyOnce",
-			"Indent parameters always once", true);
+
 	final ConfigBoolValue configAlignAcrossTableRows = new ConfigBoolValue(this, "AlignAcrossTableRows",
 			"Align assignments across rows of table constructors", true, false, LocalDate.of(2023, 6, 9));
 	final ConfigEnumValue<ComponentsOnSingleLine> configKeepComponentsOnSingleLine = new ConfigEnumValue<ComponentsOnSingleLine>(
@@ -228,9 +227,8 @@ public class AlignParametersRule extends RuleForCommands {
 	private final ConfigValue[] configValues = new ConfigValue[] { configMaxLineLength,
 			configMaxLineLengthForSingleLine, configMaxParamCountBehindProceduralCall,
 			configMaxParamCountBehindFunctionalCall, configPutProceduralCallKeywordsOnOwnLine,
-			configPutFunctionalCallKeywordsOnOwnLine, configAlignAssignments, configIndentParamOnlyOnce,
-			configAlignAcrossTableRows, configKeepComponentsOnSingleLine, configKeepOtherOneLiners,
-			configAllowContentLeftOfAssignOp };
+			configPutFunctionalCallKeywordsOnOwnLine, configAlignAssignments, configAlignAcrossTableRows,
+			configKeepComponentsOnSingleLine, configKeepOtherOneLiners, configAllowContentLeftOfAssignOp };
 
 	@Override
 	public ConfigValue[] getConfigValues() {
@@ -1024,6 +1022,7 @@ public class AlignParametersRule extends RuleForCommands {
 	}
 
 	private void setForcedLineBreaks(AlignTable table, ContentType contentType) {
+
 		boolean hasLetExpression = !table.getColumn(Columns.LET_KEYWORD.getValue()).isEmpty();
 
 		if (hasLetExpression) {
@@ -1067,8 +1066,9 @@ public class AlignParametersRule extends RuleForCommands {
 			ContentType contentType, AlignTable table, ArrayList<Token> otherLineStarts) {
 		AlignColumn keywordColumn = table.getColumn(Columns.KEYWORD.getValue());
 		boolean hasKeywords = !keywordColumn.isEmpty();
-		int addIndent = (configIndentParamOnlyOnce
-				.getValue() == true
+		Rule vattenfallRule = this.parentProfile.getRule(RuleID.ALIGN_VATTENFALL);
+		int addIndent = (vattenfallRule.isActive
+				&& ((ConfigBoolValue) vattenfallRule.getConfigValues()[3]).getValue() == true
 						? ABAP.INDENT_STEP
 						: (contentType == ContentType.ROW_IN_VALUE_OR_NEW_CONSTRUCTOR
 								|| contentType == ContentType.GROUP_KEY || hasKeywords) ? ABAP.INDENT_STEP
@@ -1166,13 +1166,11 @@ public class AlignParametersRule extends RuleForCommands {
 				continueOnSameLine = false;
 				startIndent = earlyIndent;
 			}
-		} else if (contentType == ContentType.CONSTRUCTOR_EXPR && parentToken.getFirstCodeChild().isKeyword("FOR")) {
-			Rule vattenfallRule = this.parentProfile.getRule(RuleID.ALIGN_VATTENFALL);
-			if (vattenfallRule.isActive && ((ConfigBoolValue) vattenfallRule.getConfigValues()[2]).getValue()) {
-				forceTableToNextLine = true;
-				continueOnSameLine = false;
-				startIndent = earlyIndent;
-			}
+		} else if (contentType == ContentType.CONSTRUCTOR_EXPR && parentToken.getFirstCodeChild().isKeyword("FOR")
+				&& vattenfallRule.isActive && ((ConfigBoolValue) vattenfallRule.getConfigValues()[2]).getValue()) {
+			forceTableToNextLine = true;
+			continueOnSameLine = false;
+			startIndent = earlyIndent;
 		}
 
 		return new TableStart(startIndent, continueOnSameLine, forceTableToNextLine, earlyIndent);
