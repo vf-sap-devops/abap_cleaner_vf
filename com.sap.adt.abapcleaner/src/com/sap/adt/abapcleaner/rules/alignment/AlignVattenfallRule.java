@@ -158,7 +158,8 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 		Token period = command.getLastNonCommentToken();
 		// align VALUE #( )| type( )
-		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")) {
+		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")
+				&& configValueStatementOnNewLine.getValue()) {
 			Token parentToken = firstCode;
 			int baseIndent = command.getFirstToken().getStartIndexInLine();
 			if (alignValueAndFor(code, command, parentToken, period, baseIndent, baseIndent)) {
@@ -177,6 +178,16 @@ public class AlignVattenfallRule extends RuleForCommands {
 			if (alignMethodChain(code, command, parentToken, period, baseIndent, baseIndent)) {
 				changed = true;
 			}
+		}
+
+		// align FOR statements on a new line
+		if (firstCode.matchesDeep(true, TokenSearch.ASTERISK, "FOR") && configForStatementsOnNewLine.getValue()) {
+			Token parentToken = firstCode;
+			int baseIndent = command.getFirstToken().getStartIndexInLine();
+			if (alignFor(code, command, parentToken, period, baseIndent, baseIndent)) {
+				changed = true;
+			}
+
 		}
 
 		return changed;
@@ -201,14 +212,29 @@ public class AlignVattenfallRule extends RuleForCommands {
 			throws UnexpectedSyntaxException {
 		AlignLine line = table.addLine();
 
-		if (expressionToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR") && configForStatementsOnNewLine.getValue()) {
-			Token forToken = expressionToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
-			forToken.setWhitespace(1, expressionToken.getStartIndexInLine() + 2);
-		}
+//		if (expressionToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR") && configForStatementsOnNewLine.getValue()) {
+//			Token forToken = expressionToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
+//			forToken.setWhitespace(1, expressionToken.getStartIndexInLine() + 2);
+//		}
 
 		AlignCell expressionCell = new AlignCellTerm(Term.createForTokenRange(expressionToken, endToken));
 
 		line.setCell(ValueColumns.VALUE_KEYWORD.getValue(), expressionCell);
+
+		return endToken;
+	}
+
+	private Token indentForStatement(Token startToken, Token endToken, AlignTable table)
+			throws UnexpectedSyntaxException {
+		AlignLine line = table.addLine();
+
+		if (startToken.matchesDeep(true, TokenSearch.ASTERISK, "FOR") && configForStatementsOnNewLine.getValue()) {
+			Token forToken = startToken.getNextTokenOfTypeAndText(TokenType.KEYWORD, "FOR");
+			forToken.setWhitespace(1, forToken.getPrevCodeToken().getStartIndexInLine() + ABAP.INDENT_STEP);
+		}
+
+		AlignCell newCell = new AlignCellTerm(Term.createForTokenRange(startToken, endToken));
+		line.setCell(ValueColumns.VALUE_KEYWORD.getValue(), newCell);
 
 		return endToken;
 	}
@@ -222,9 +248,9 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 		try {
 			Token token = command.getFirstCodeToken();
-			if (configValueStatementOnNewLine.getValue()) {
-				token = addDataKeyword(token, table);
-			}
+//			if (configValueStatementOnNewLine.getValue()) {
+			token = addDataKeyword(token, table);
+//			}
 
 			token = token.getNextCodeToken();
 			if (!token.isKeyword("VALUE")) {
@@ -305,4 +331,29 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 	}
 
+	private final Boolean alignFor(Code code, Command command, Token parentToken, Token endToken, int baseIndent,
+			int minimumIndent) throws UnexpectedSyntaxAfterChanges {
+		boolean changed = false;
+		Command[] changedCommands = null;
+		AlignTable table = new AlignTable(MAX_VALUE_COLUMN_COUNT);
+		table.addLine();
+		try {
+			Token token = command.getFirstCodeToken();
+
+			token = indentForStatement(token, endToken, table);
+
+			changedCommands = table.align(baseIndent, minimumIndent, true);
+
+			if (changedCommands != null && changedCommands.length > 0) { // changedCommands can only contain this
+																			// current command
+				changed = true;
+			}
+
+			return changed;
+
+		} catch (UnexpectedSyntaxException ex) {
+			(new UnexpectedSyntaxBeforeChanges(this, ex)).addToLog();
+			return false;
+		}
+	}
 }

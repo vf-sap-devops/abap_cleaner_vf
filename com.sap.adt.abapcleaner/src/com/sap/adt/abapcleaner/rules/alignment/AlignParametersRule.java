@@ -21,6 +21,7 @@ import com.sap.adt.abapcleaner.rulebase.ConfigEnumValue;
 import com.sap.adt.abapcleaner.rulebase.ConfigIntValue;
 import com.sap.adt.abapcleaner.rulebase.ConfigValue;
 import com.sap.adt.abapcleaner.rulebase.Profile;
+import com.sap.adt.abapcleaner.rulebase.Rule;
 import com.sap.adt.abapcleaner.rulebase.RuleForCommands;
 import com.sap.adt.abapcleaner.rulebase.RuleGroupID;
 import com.sap.adt.abapcleaner.rulebase.RuleID;
@@ -981,9 +982,6 @@ public class AlignParametersRule extends RuleForCommands {
 							&& contentType != ContentType.GROUP_KEY && contentType != ContentType.IMPORT_OR_EXPORT) {
 						// line-end comments after method calls usually do not refer to the parameters;
 						// therefore, keep them in their place, too
-//					} else if (token.getText().equals("FOR")) {
-//						table.addLine();
-
 					} else {
 						// store 'other line starts'; in case this is a keyword like "EXPORTING", this
 						// may be removed again later
@@ -1169,9 +1167,12 @@ public class AlignParametersRule extends RuleForCommands {
 				startIndent = earlyIndent;
 			}
 		} else if (contentType == ContentType.CONSTRUCTOR_EXPR && parentToken.getFirstCodeChild().isKeyword("FOR")) {
-			forceTableToNextLine = true;
-			continueOnSameLine = false;
-			startIndent = earlyIndent;
+			Rule vattenfallRule = this.parentProfile.getRule(RuleID.ALIGN_VATTENFALL);
+			if (vattenfallRule.isActive && ((ConfigBoolValue) vattenfallRule.getConfigValues()[2]).getValue()) {
+				forceTableToNextLine = true;
+				continueOnSameLine = false;
+				startIndent = earlyIndent;
+			}
 		}
 
 		return new TableStart(startIndent, continueOnSameLine, forceTableToNextLine, earlyIndent);
