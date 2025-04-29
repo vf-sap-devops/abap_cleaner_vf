@@ -98,12 +98,21 @@ public class AlignVattenfallRule extends RuleForCommands {
 
 	@Override
 	public String getExample() {
-		return "" + LINE_SEP + "    DATA(lt_customer_ids) = VALUE #( ( 1 ) ( 2 ) ( 3 ) )." + LINE_SEP + LINE_SEP
-				+ "    DATA(lt_r_customer_ids) = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )."
-				+ LINE_SEP + LINE_SEP
-				+ "    lt_r_customer_ids = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )."
-				+ LINE_SEP + LINE_SEP + "    lo_object=>get_instance()->set_data( is_data = ls_data)->execute()."
-				+ LINE_SEP;
+		return "" + LINE_SEP + "DATA(lt_customer_ids) = VALUE #( ( 1 ) ( 2 ) ( 3 ) )." + 
+					LINE_SEP +
+					LINE_SEP + "CONSTANTS:" +
+					LINE_SEP + "  BEGIN OF cs_test," +
+					LINE_SEP + "    one TYPE i VALUE '1'," +
+					LINE_SEP + "    two TYPE i VALUE '2'," +
+					LINE_SEP + "    three TYPE i VALUE '3'," +
+					LINE_SEP + "  END OF cs_test." +
+					LINE_SEP + 
+					LINE_SEP + "    DATA(lt_r_customer_ids) = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )." + 
+					LINE_SEP + 
+					LINE_SEP + "    lt_r_customer_ids = VALUE tt_r_customer_ids( FOR <fs_id> IN lt_customer_ids SIGN = 'I' option = 'EQ' ( low = <fs_id ) )." +
+				 	LINE_SEP + 
+				 	LINE_SEP + "    lo_object=>get_instance()->set_data( is_data = ls_data)->execute()." +
+				 	LINE_SEP;
 	}
 
 	final ConfigBoolValue configValueStatementOnNewLine = new ConfigBoolValue(this, "ValueStatementOnNewLine",
@@ -145,8 +154,8 @@ public class AlignVattenfallRule extends RuleForCommands {
 		boolean changed = false;
 
 		Token period = command.getLastNonCommentToken();
-		// align VALUE #( )| type( )
-		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE")
+		// align VALUE #( )|type( )
+		if (firstCode.matchesOnSiblings(true, TokenSearch.ASTERISK, "VALUE", TokenSearch.ANY_IDENTIFIER)
 				&& configValueStatementOnNewLine.getValue()) {
 			Token parentToken = firstCode;
 			int baseIndent = command.getFirstToken().getStartIndexInLine();
