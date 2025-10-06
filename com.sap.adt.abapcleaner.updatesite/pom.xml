@@ -12,6 +12,14 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
     <version>1.21.2-SNAPSHOT</version>
     <relativePath>../</relativePath>
   </parent>
+  
+  <repositories>
+  <repository>
+    <id>sap-abap-cleaner</id>
+    <layout>p2</layout>
+    <url>https://sap.github.io/abap-cleaner/updatesite/</url>
+  </repository>
+</repositories>
 
   <build>
     <plugins>
@@ -25,5 +33,4 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       </plugin>
     </plugins>
   </build>
-
 </project>
